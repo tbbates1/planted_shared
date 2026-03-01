@@ -1,0 +1,103 @@
+kind: native
+name: Planted_Sales_8070rS
+display_name: Planted Sales Agent
+description: The Planted Sales Agent is your all-in-one sales assistant for the Planted
+  team. It connects to both Microsoft Dynamics 365 Business Central and Salesforce
+  CRM, and automatically delegates tasks to the right system. Use this agent to manage
+  the full sales cycle — from looking up customers and inventory in Business Central
+  to tracking opportunities, logging calls, and managing accounts in Salesforce —
+  all in a single conversation.
+context_access_enabled: true
+context_variables: []
+restrictions: editable
+supported_apps: []
+llm: groq/openai/gpt-oss-120b
+style: react
+hide_reasoning: false
+instructions: |-
+  You are the master sales assistant for the Planted team. You have access to two specialized sub-agents and you delegate all tasks to the correct one based on what the user is asking.
+
+  **Delegate to the Business Central Agent when the user asks about:**
+  - Looking up customers
+  - Checking inventory or stock levels
+  - Creating or reviewing sales orders
+  - Order history by customer or date range
+  - Order line items, unit prices, or order totals
+
+  **Delegate to the Salesforce Agent when the user asks about:**
+  - Accounts or contacts
+  - Opportunities — finding, creating, or updating
+  - Sales pipeline, stages, or deal values
+  - Products and pricing from the price book
+  - Logging calls or adding notes to opportunities
+  - Date range or quarterly opportunity reports
+
+  **General behavior:**
+
+  Never try to answer Business Central or Salesforce questions yourself — always delegate to the appropriate sub-agent. If a request spans both systems — for example, a customer exists in Business Central and also has opportunities in Salesforce — delegate to each agent separately and combine the results into a single clear response. If it is unclear which system the user is referring to, ask one clarifying question before delegating. Present all results in clean tables where possible. Be concise and action-oriented — the user is a sales professional who needs fast, accurate answers.
+guidelines: []
+collaborators:
+- test_5027ug
+- Salesforce_Agent_9672uW
+tools: []
+toolkits: []
+plugins:
+  agent_pre_invoke: []
+  agent_post_invoke: []
+knowledge_base: []
+chat_with_docs:
+  enabled: false
+  supports_full_document: true
+  vector_index:
+    chunk_size: 400
+    chunk_overlap: 50
+    limit: 10
+    extraction_strategy: express
+  generation:
+    prompt_instruction: ''
+    max_docs_passed_to_llm: 5
+    generated_response_length: Moderate
+    display_text_no_results_found: I searched my knowledge base, but did not find
+      anything related to your query
+    display_text_connectivity_issue: I might have information related to your query
+      to share, but am unable to connect to my knowledge base at the moment
+    idk_message: I'm afraid I don't understand. Please rephrase your question.
+    enabled: false
+  query_rewrite:
+    enabled: true
+  confidence_thresholds:
+    retrieval_confidence_threshold: Lowest
+    response_confidence_threshold: Lowest
+  citations:
+    citation_title: How do we know?
+    citations_shown: -1
+  hap_filtering:
+    output:
+      enabled: false
+      threshold: 0.5
+  query_source: Agent
+  agent_query_description: The query to search for in the knowledge base
+starter_prompts:
+  is_default_prompts: false
+  prompts:
+  - id: default0
+    title: I need to place a new sales order
+    subtitle: ''
+    prompt: I need to place a new sales order
+    state: active
+  - id: default1
+    title: Update an opportunity in Salesforce
+    subtitle: ''
+    prompt: Update an opportunity in Salesforce
+    state: active
+  - id: default2
+    title: Show me all open opportunities from last quarter
+    subtitle: ''
+    prompt: Show me all open opportunities from last quarter
+    state: active
+welcome_content:
+  welcome_message: Hi! I'm your Planted sales assistant. Ask me anything about orders,
+    inventory, or opportunities.
+  description: Accuracy of generated answers may vary. Please double-check responses.
+  is_default_message: false
+spec_version: v1
