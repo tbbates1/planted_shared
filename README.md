@@ -12,17 +12,17 @@
    - [Setting Up the Salesforce Connection](#setting-up-the-salesforce-connection)
    - [Importing Tools](#importing-tools)
    - [Importing Agents](#importing-agents)
-3. *(More sections coming soon)*
+3. [MS Teams Integration](#ms-teams-integration)
 
 ---
 
 ## Agent Overview
 
-The Planted sales assistant system is built as a **multi-agent architecture** — a master orchestrator that routes requests to two specialized sub-agents, each connected to a different backend system. Together, they cover the full sales cycle from order management to CRM pipeline tracking.
+The Planted sales assistant system is built as a **multi-agent architecture** — a orchestrator agent routes requests to two specialized sub-agents, each connected to a different backend system.
 
-### Planted Sales Agent (Master Orchestrator)
+### Planted Sales Agent (Orchestrator)
 
-The top-level agent that users interact with directly. It does not answer Business Central or Salesforce questions itself — instead, it intelligently delegates every request to the appropriate sub-agent based on what the user is asking. When a request spans both systems (e.g., a customer exists in Business Central *and* has open opportunities in Salesforce), it calls both sub-agents and merges the results into a single response.
+The top-level agent that users interact with directly. It does not answer Business Central or Salesforce questions itself — instead, it delegates every request to the appropriate sub-agent based on what the user is asking. When a request spans both systems (e.g., a customer exists in Business Central *and* has open opportunities in Salesforce), it calls both sub-agents and merges the results into a single response.
 
 ---
 
@@ -65,7 +65,7 @@ Connects to **Salesforce CRM** and handles all pipeline, account, and opportunit
 
 ### Connecting to the ADK
 
-Before importing any tools or agents, you need to install the watsonx Orchestrate ADK and connect it to your environment.
+Before importing any tools or agents, you need to install the watsonx Orchestrate ADK and connect it to your environment. Full ADK documentation is available at [developer.watson-orchestrate.ibm.com](https://developer.watson-orchestrate.ibm.com/getting_started/installing).
 
 Install Python 3.11:
 
@@ -95,7 +95,7 @@ orchestrate env activate <environment-name>
 
 For Planted, the service instance URL is:
 ```
-https://eu-central-1.dl.watson-orchestrate.ibm.com
+https://eu-central-1.dl.watson-orchestrate.ibm.com/...
 ```
 
 Once activated, all subsequent `orchestrate` CLI commands will run against this environment.
@@ -331,14 +331,9 @@ To confirm all three agents were imported successfully:
 orchestrate agents list -v
 ```
 
-All three agents will initially be in a **draft** state. To make them available to end users, deploy the orchestrator:
+## MS Teams Integration
 
-```bash
-orchestrate agents deploy --name Planted_Sales_8070rS
-```
+For instructions on setting up the Planted Sales Agent in Microsoft Teams, including channel configuration and bot permissions, see the setup guide:
 
-> **Note:** In watsonx Orchestrate Developer Edition, deploy commands are not supported. Agents will remain in draft state and are accessible directly via the Web chat UI.
+[MS Teams Channel Setup Guide](documents/channel_setup_teams.pdf)
 
----
-
-*Additional sections will be added below this line.*
