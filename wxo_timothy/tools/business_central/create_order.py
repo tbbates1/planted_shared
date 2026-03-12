@@ -8,7 +8,7 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="create_sales_order",
     description="Create a draft sales order for a customer and add up to 10 item lines. Returns the new order id and customer id.",
 )
@@ -70,7 +70,7 @@ def create_sales_order(
     if not item_id_1 or quantity_1 <= 0:
         raise ValueError("item_id_1 must be provided and quantity_1 must be > 0")
 
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {

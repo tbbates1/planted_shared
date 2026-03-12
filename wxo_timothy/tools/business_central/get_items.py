@@ -5,7 +5,7 @@ import requests
 
 MY_APP_ID = "business_central"
 
-@tool(expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)])
+@tool(expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)])
 def get_inventory() -> list[dict]:
     """Get inventory items from Microsoft Dynamics 365 Business Central.
 
@@ -18,7 +18,7 @@ def get_inventory() -> list[dict]:
             - inventory (number | None)
             - uom (str | None)
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}

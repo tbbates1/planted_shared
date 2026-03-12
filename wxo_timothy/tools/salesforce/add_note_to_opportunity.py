@@ -6,7 +6,7 @@ import requests
 MY_APP_ID = "salesforce"
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="add_note_to_opportunity",
     description="Add a note to a Salesforce opportunity. Returns the new note id.",
 )
@@ -25,7 +25,7 @@ def add_note_to_opportunity(
     Returns:
         dict: Keys: id (str), success (bool).
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {

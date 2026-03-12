@@ -6,12 +6,12 @@ import requests
 MY_APP_ID = "business_central"
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)]
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)]
 )
 def get_company_id() -> list[dict]:
     """Returns all Business Central companies with their IDs and names."""
 
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}

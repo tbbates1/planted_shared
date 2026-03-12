@@ -6,7 +6,7 @@ import requests
 MY_APP_ID = "salesforce"
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="get_opportunities_by_account",
     description=(
         "Retrieve all Salesforce opportunities for a specific account. "
@@ -29,7 +29,7 @@ def get_opportunities_by_account(
         list[dict]: Opportunities with keys: id, name, accountName, accountId, amount,
                     stage, closeDate, owner, description.
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}

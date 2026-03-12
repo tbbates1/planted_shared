@@ -8,7 +8,7 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="get_orders_for_customer",
     description="Retrieve all sales orders for a specific customer from Microsoft Dynamics 365 Business Central.",
 )
@@ -31,7 +31,7 @@ def get_orders_for_customer(customer_id: str) -> list[dict]:
             - totalAmountIncludingTax (float): Order total after tax.
             - currencyCode (str): Currency of the order.
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}

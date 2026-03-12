@@ -8,7 +8,7 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="get_order_detail",
     description="Retrieve a sales order with its line items, individual line costs, and order totals.",
 )
@@ -39,7 +39,7 @@ def get_sales_order_details(order_id: str) -> dict:
                 - taxPercent (float): Tax rate applied to this line.
                 - amountIncludingTax (float): Line total after tax.
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}

@@ -4,15 +4,15 @@ kind: connection
 environments:
   draft:
     server_url: https://orgfarm-75c52beed1-dev-ed.develop.my.salesforce.com
-    kind: oauth_auth_client_credentials_flow
-    type: team
+    kind: oauth_auth_code_flow
+    type: member
     app_config:
       header:
         content-type: application/x-www-form-urlencoded
   live:
     server_url: https://orgfarm-75c52beed1-dev-ed.develop.my.salesforce.com
-    kind: oauth_auth_client_credentials_flow
-    type: team
+    kind: oauth_auth_code_flow
+    type: member
     app_config:
       header:
         content-type: application/x-www-form-urlencoded

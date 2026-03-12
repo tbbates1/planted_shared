@@ -6,7 +6,7 @@ import requests
 MY_APP_ID = "salesforce"
 
 @tool(
-    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
+    expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)],
     name="get_opportunity_products",
     description="Retrieve all products and line items on a specific Salesforce opportunity.",
 )
@@ -20,7 +20,7 @@ def get_opportunity_products(opportunity_id: str) -> list[dict]:
         list[dict]: Line items with keys: id, productName, productCode, quantity,
                     unitPrice, totalPrice, discount, description.
     """
-    conn = connections.oauth2_client_creds(MY_APP_ID)
+    conn = connections.oauth2_auth_code(MY_APP_ID)
     base = conn.url
     access_token = conn.access_token
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
