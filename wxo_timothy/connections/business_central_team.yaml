@@ -1,0 +1,18 @@
+app_id: business_central_wa
+spec_version: v1
+kind: connection
+environments:
+  draft:
+    server_url: https://api.businesscentral.dynamics.com/v2.0/Planted2.onmicrosoft.com/Production/api/v2.0
+    kind: oauth_auth_client_credentials_flow
+    type: team
+    app_config:
+      header:
+        content-type: application/x-www-form-urlencoded
+  live:
+    server_url: https://api.businesscentral.dynamics.com/v2.0/Planted2.onmicrosoft.com/Production/api/v2.0
+    kind: oauth_auth_client_credentials_flow
+    type: team
+    app_config:
+      header:
+        content-type: application/x-www-form-urlencoded

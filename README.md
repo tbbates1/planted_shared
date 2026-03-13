@@ -15,6 +15,11 @@
 3. [Channel Integrations](#channel-integrations)
    - [MS Teams Integration](#ms-teams-integration)
    - [WhatsApp Integration (via Twilio)](#whatsapp-integration-via-twilio)
+4. [WhatsApp Order Agent](#whatsapp-order-agent)
+   - [Architecture Overview](#architecture-overview)
+   - [Setting Up the Team Credentials BC Connection](#setting-up-the-team-credentials-bc-connection)
+   - [Importing the WhatsApp Tools and Agent](#importing-the-whatsapp-tools-and-agent)
+   - [Connecting the WhatsApp Channel](#connecting-the-whatsapp-channel)
 
 ---
 
@@ -552,6 +557,8 @@ watsonx Orchestrate supports multiple messaging channels — each channel connec
 
 The setup on the external platform side (Facebook, Twilio, Microsoft Teams, etc.) follows each platform's standard onboarding flow. The watsonx Orchestrate side is the same for all channels: create a channel config, import it via the CLI, and paste the resulting Event URL into the platform's webhook settings.
 
+> **Critical limitation:** OAuth connections (all types — Auth Code, Client Credentials, Implicit, Password) are **only supported in the watsonx Orchestrate integrated webchat UI**. They do not work on external channels such as MS Teams, WhatsApp, or embedded webchat. If an agent on an external channel tries to call a tool that uses an OAuth connection, the tool will fail silently and the LLM will fabricate data instead of returning real results. To use authenticated tools on external channels, use **Key-Value connections** and handle the token exchange manually in your Python tool code.
+
 ---
 
 ### MS Teams Integration
@@ -696,13 +703,13 @@ Update the Twilio webhook URL to the new live Event URL.
 
 #### Known Limitations and Best Practices
 
-##### OAuth and Member Credentials
+##### OAuth Connections Do Not Work on External Channels
 
-The Business Central and Salesforce connections use **OAuth2 Authorization Code with Member credentials** — each user authenticates individually via a browser-based login flow. This works in the WXO web UI (users see a "Connect Apps" prompt), but **WhatsApp has no way to trigger a browser-based OAuth redirect**. If the user has not authenticated via the web UI first, the tools may fail silently and the agent may generate fabricated data instead of returning real results.
+**All OAuth connection types** (Auth Code, Client Credentials, Implicit, Password) are only supported in the watsonx Orchestrate integrated webchat UI. This is a platform limitation — not a configuration issue. On external channels (WhatsApp, MS Teams, embedded webchat), OAuth connections fail silently: tools never execute, and the LLM fabricates data instead of returning real results.
 
-**Workarounds:**
-- Have each user authenticate once via the WXO web UI before using WhatsApp
-- Switch the connections to **Team credentials** (shared service account) for the WhatsApp channel — this means all WhatsApp users share the same API access level, but removes the per-user login requirement
+This affects both member credentials (per-user login) and team credentials (shared service account) when configured as OAuth connections.
+
+**Workaround:** Use **Key-Value connections** instead. Store client_id, client_secret, tenant_id, and base_url as key-value entries, then handle the OAuth token exchange manually in your Python tool code using `requests`. Key-Value connections work on all channels.
 
 ##### WhatsApp Message Formatting
 
@@ -727,4 +734,268 @@ WhatsApp does not render markdown tables (pipes and dashes). Agent responses tha
 | `"Messaging configuration is unavailable"` on phone number page | Number does not support SMS | This number can still be used for WhatsApp via voice verification, or buy a new number with SMS capability |
 | Messages sent but no reply | Event URL is incorrect or incomplete | Verify the full URL ends with `/events` — check via `orchestrate channels list-channels --verbose` |
 | Twilio returns 401/403 on webhook | Auth Token mismatch | Re-import the channel with the correct `twilio_authentication_token` |
+
+---
+
+## WhatsApp Order Agent
+
+The **WhatsApp Order Agent** is a standalone agent purpose-built for WhatsApp. It connects to Business Central using **team credentials** (OAuth2 Client Credentials) so that it works without requiring each WhatsApp user to log in via a browser. Customers and sales reps can place orders via WhatsApp — orders are created as **sales quotes** in BC, which the sales team reviews and converts to sales orders with one click.
+
+### Why a Separate Agent?
+
+The main Planted Sales Agent uses **member credentials** (per-user OAuth login), which requires a browser redirect to authenticate. This works in the WXO web UI but **not in WhatsApp** — there is no way to trigger an OAuth login flow in a chat message. Without valid credentials, the agent's tools fail silently and the LLM fabricates data instead of returning real results.
+
+The WhatsApp Order Agent solves this by using a **separate Business Central connection with team credentials** — a shared service account that authenticates via client ID and secret, with no user interaction required.
+
+### Why Sales Quotes (Not Sales Orders)?
+
+Orders created via WhatsApp go into BC as **sales quotes** (not sales orders) so that:
+
+- The quote sits in **Draft** status until someone on the sales team reviews it
+- The reviewer can verify quantities, pricing, and customer details
+- Converting a quote to a sales order is a single click in BC (**Make Order**)
+- The original WhatsApp message is stored in the `externalDocumentNumber` field for traceability
+
+This prevents accidental orders from going straight to fulfillment.
+
+---
+
+### Architecture Overview
+
+```
+WhatsApp User
+    │
+    ▼
+Twilio (WhatsApp Sender +15559470078)
+    │  webhook (HTTP POST)
+    ▼
+watsonx Orchestrate — WhatsApp Order Agent
+    │
+    ├── wa_get_customers    ──► BC API (team creds)
+    ├── wa_get_inventory    ──► BC API (team creds)
+    └── wa_create_sales_quote ──► BC API (team creds)
+    │
+    ▼
+Business Central — Sales Quotes
+    │
+    ▼ (manual review + "Make Order")
+Business Central — Sales Orders
+```
+
+| Component | Details |
+|---|---|
+| Agent | `WhatsApp_Quote_Agent` — standalone, no sub-agents |
+| Connection | `business_central_wa` — OAuth2 Client Credentials, team type |
+| Tools | `wa_get_customers`, `wa_get_inventory`, `wa_create_sales_quote` |
+| Channel | Twilio WhatsApp (`twilio_whatsapp`) |
+
+---
+
+### Setting Up the Team Credentials BC Connection
+
+This connection uses **OAuth2 Client Credentials** with a **separate Azure app registration** — it does not share the app used by the member-credentials connection, so there is no risk of breaking the existing Planted Sales Agent.
+
+#### Part 1: Register a New App in Microsoft Entra ID (Azure AD)
+
+1. Go to [portal.azure.com](https://portal.azure.com) → **App registrations** → **New registration**.
+2. Name it something like `Whatsapp Business Central Agent`.
+3. Set **Supported account types** to `My organization only`.
+4. No redirect URI is needed (client credentials flow does not use redirects).
+5. Click **Register**.
+
+From the **Overview** page, note down:
+- **Application (client) ID** — e.g. `ee7f342c-dadd-446e-9dd7-7a5060d03e64`
+- **Directory (tenant) ID** — e.g. `4058ede8-b1f2-4dd6-8854-b95dda221d20`
+
+Go to **Certificates & secrets → Client secrets**, click **New client secret**, and copy the **Value** immediately — it is only shown once.
+
+#### Part 2: Add Application Permissions
+
+1. Go to **API permissions** → **Add a permission** → **Dynamics 365 Business Central**.
+2. Select **Application permissions** (not Delegated).
+3. Check both:
+   - **`app_access`** — Access according to the application's permissions in Dynamics 365 Business Central
+   - **`API.ReadWrite.All`** — Full access to web services API
+4. Click **Add permissions**.
+5. Click **Grant admin consent for [your tenant]** — both permissions should show green checkmarks with "Granted" status.
+
+> **Note:** These are Application permissions, not Delegated permissions. Application permissions allow the app to authenticate as itself (no user involved), which is what the client credentials flow requires.
+
+#### Part 3: Register the App in Business Central
+
+Business Central needs to know about this Azure app and what permissions it has.
+
+1. In Business Central, search for **"Microsoft Entra Applications"** (or "Azure Active Directory Applications").
+2. Click **New**.
+3. Enter the **Client ID** from the Azure app registration.
+4. Set **Description** to e.g. `WhatsApp Agent`.
+5. Set **State** to **Enabled**.
+6. Under **User Permission Sets**, add **`D365 BUS FULL ACCESS`** (Dyn. 365 Full Business Access) with scope **System**.
+
+This grants the app full access to customers, items, sales quotes, and sales orders.
+
+#### Part 4: Create the Connection in watsonx Orchestrate
+
+Import the connection YAML:
+
+```bash
+orchestrate connections import -f wxo_timothy/connections/business_central_team.yaml
+```
+
+Then set credentials for both environments:
+
+```bash
+orchestrate connections set-credentials -a business_central_wa \
+  --env draft \
+  --client-id '<YOUR_CLIENT_ID>' \
+  --client-secret '<YOUR_CLIENT_SECRET>' \
+  --token-url 'https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/token' \
+  --scope 'https://api.businesscentral.dynamics.com/.default' \
+  --send-via header
+```
+
+```bash
+orchestrate connections set-credentials -a business_central_wa \
+  --env live \
+  --client-id '<YOUR_CLIENT_ID>' \
+  --client-secret '<YOUR_CLIENT_SECRET>' \
+  --token-url 'https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/token' \
+  --scope 'https://api.businesscentral.dynamics.com/.default' \
+  --send-via header
+```
+
+To verify the connection appears in the WXO UI, go to **Manage → Connections** — it should show `business_central_wa` with green checkmarks for OAuth2 (Client Credentials) and Team credentials on both Draft and Live.
+
+> **Note:** The `orchestrate connections list` CLI command may show a red ❌ for OAuth connections even when credentials are correctly set. This is expected — OAuth credentials show as "not set" until a runtime token exchange occurs. Verify via the WXO UI instead.
+
+---
+
+### Importing the WhatsApp Tools and Agent
+
+#### Tools
+
+The three tools are in `wxo_timothy/tools/business_central_whatsapp/`:
+
+| Tool | File | Description |
+|---|---|---|
+| `wa_get_customers` | `wa_get_customers.py` | Look up customers by name, returns ID, number, and display name |
+| `wa_get_inventory` | `wa_get_inventory.py` | Check available products and stock levels |
+| `wa_create_sales_quote` | `wa_create_sales_quote.py` | Create a draft sales quote with up to 10 line items. Stores the original WhatsApp message in `externalDocumentNumber` |
+
+All three tools use `ConnectionType.OAUTH2_CLIENT_CREDS` and fetch credentials via `connections.oauth2_client_creds("business_central_wa")`.
+
+Import them in order, binding each to the `business_central_wa` connection:
+
+```bash
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_get_customers.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_get_inventory.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_create_sales_quote.py -a business_central_wa
+```
+
+> **Important:** The `-a business_central_wa` flag binds each tool to the connection. Without this, the tool will import but fail at runtime when it tries to fetch credentials.
+
+#### Agent
+
+Import the agent:
+
+```bash
+orchestrate agents import -f wxo_timothy/agents/WhatsApp_Quote_Agent.yaml
+```
+
+The agent YAML references the three tools by name. If the tools were not imported first, the agent import will fail.
+
+To verify:
+
+```bash
+orchestrate agents list -v
+```
+
+Confirm that `WhatsApp_Quote_Agent` appears with three tools attached.
+
+---
+
+### Connecting the WhatsApp Channel
+
+This assumes you already have a registered WhatsApp sender in Twilio (see [WhatsApp Integration via Twilio](#whatsapp-integration-via-twilio) for sender setup).
+
+#### Step 1: Import the Channel
+
+Create a temporary YAML file with your real Twilio credentials (do not commit this file):
+
+```yaml
+name: "WhatsApp Orders"
+description: "Planted WhatsApp order agent for draft sales quotes"
+channel: "twilio_whatsapp"
+spec_version: "v1"
+kind: "channel"
+account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+twilio_authentication_token: "your_auth_token_here"
+```
+
+Import it:
+
+```bash
+orchestrate channels import --agent-name WhatsApp_Quote_Agent --env draft --file /path/to/channel.yaml
+```
+
+Copy the **Event URL** from the output.
+
+#### Step 2: Update the Twilio Webhook
+
+1. In the Twilio Console, go to **Messaging → Senders → WhatsApp Senders**.
+2. Click **Edit Sender** on your WhatsApp number.
+3. Under **Messaging Endpoint Configuration**, paste the Event URL into **"Webhook URL for incoming messages"**.
+4. Set method to **HTTP Post**.
+5. Click **Update WhatsApp Sender**.
+
+> **Note:** A single Twilio WhatsApp sender can only point to one webhook URL at a time. If you previously had the Planted Sales Agent connected, the webhook will now route to the WhatsApp Order Agent instead. To switch back, update the webhook URL to the Planted Sales Agent's Event URL.
+
+#### Step 3: Test
+
+Send a WhatsApp message to your registered number:
+
+> "200 pcs planted.chicken Nature and 100 pcs planted.nuggets for Migros"
+
+The agent should:
+1. Look up Migros via `wa_get_customers`
+2. Look up the items via `wa_get_inventory`
+3. Confirm the order details before creating
+4. Create the sales quote in BC via `wa_create_sales_quote`
+5. Return a confirmation with the quote number
+
+Check Business Central under **Sales → Sales Quotes** to verify the quote appeared.
+
+#### Step 4: Deploy to Live
+
+```bash
+orchestrate channels import --agent-name WhatsApp_Quote_Agent --env live --file /path/to/channel.yaml
+```
+
+Update the Twilio webhook URL to the new live Event URL.
+
+---
+
+### Agent Behavior Notes
+
+The WhatsApp Order Agent instructions include:
+
+- **Real product catalog** — all Planted products (planted.steak, planted.chicken, planted.pulled, planted.nuggets, etc.)
+- **Real customer list** — Migros, Coop, Aldi Suisse, Lidl, REWE, Edeka, Kaufland, etc.
+- **Confirmation step** — the agent always summarizes the order and asks for confirmation before creating the quote
+- **WhatsApp-friendly formatting** — numbered lists instead of markdown tables
+- **Anti-hallucination rules** — if a tool fails, the agent reports the error instead of making up data
+- **Original message tracking** — the customer's original WhatsApp message is stored in the `externalDocumentNumber` field on the sales quote (truncated to 35 characters, which is BC's limit)
+
+---
+
+### Troubleshooting
+
+| Issue | Cause | Fix |
+|---|---|---|
+| "business_central_wa needs to be connected with your team credentials" | OAuth connections do not work on external channels (WhatsApp, Teams) — this is a platform limitation | Switch to a **Key-Value connection** and handle the OAuth token exchange manually in the Python tool code. OAuth connections only work in the WXO webchat UI |
+| Token exchange works in webchat but fails on WhatsApp/Teams | Same root cause — OAuth is webchat-only | Use Key-Value connections for any tools that need to work on external channels |
+| Agent returns fabricated product data | Tools are not attached to the agent, or connection binding is missing | Re-import tools with `-a business_central_wa` flag, then re-import the agent |
+| `401 Unauthorized` from BC API | Azure app not registered in BC, or permissions not granted | In BC, go to Microsoft Entra Applications and verify the app is Enabled with D365 BUS FULL ACCESS |
+| Quote not appearing in BC | The API call succeeded but the quote is in Draft status | In BC, go to Sales → Sales Quotes and check the "All" filter — draft quotes may be hidden by default |
+| `externalDocumentNumber` is truncated | BC limits this field to 35 characters | This is expected. For longer messages, consider using the BC document attachments API instead |
 
