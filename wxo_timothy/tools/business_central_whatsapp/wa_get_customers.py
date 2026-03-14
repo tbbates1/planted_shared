@@ -10,7 +10,7 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     name="wa_get_customers",
-    description="Gets all customers from Business Central. Returns customer id, number, and name.",
+    description="Gets all customers from Business Central. Returns customer id, number, name, and phone number.",
 )
 def wa_get_customers(search: str = "") -> list[dict]:
     """Gets customers from Microsoft Dynamics 365 Business Central.
@@ -19,7 +19,7 @@ def wa_get_customers(search: str = "") -> list[dict]:
         search (str): Optional partial customer name to filter by. Leave blank for all customers.
 
     Returns:
-        list[dict]: Customers with keys: id, number, displayName.
+        list[dict]: Customers with keys: id, number, displayName, phoneNumber.
     """
     conn = connections.oauth2_client_creds(MY_APP_ID)
     base = conn.url
@@ -28,7 +28,7 @@ def wa_get_customers(search: str = "") -> list[dict]:
 
     url = (
         f"{base}/companies({COMPANY_ID})/customers"
-        f"?$select=id,number,displayName"
+        f"?$select=id,number,displayName,phoneNumber"
         f"&$top=20000"
     )
 
@@ -47,6 +47,6 @@ def wa_get_customers(search: str = "") -> list[dict]:
         customers.extend(payload.get("value", []))
 
     return [
-        {"id": c["id"], "number": c["number"], "displayName": c["displayName"]}
+        {"id": c["id"], "number": c["number"], "displayName": c["displayName"], "phoneNumber": c.get("phoneNumber", "")}
         for c in customers
     ]

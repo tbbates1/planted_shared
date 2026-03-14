@@ -41,29 +41,14 @@ def _lookup_customer_by_phone(base: str, headers: dict, phone: str) -> dict | No
     return None
 
 
-def _lookup_customer_by_number(base: str, headers: dict, customer_number: str) -> str | None:
-    """Resolve a short customer number (e.g. C0012) to its GUID."""
-    url = (
-        f"{base}/companies({COMPANY_ID})/customers"
-        f"?$select=id,number,displayName"
-        f"&$filter=number eq '{customer_number}'"
-    )
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    results = resp.json().get("value", [])
-    if results:
-        return results[0]["id"]
-    return None
-
-
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
-    name="wa_create_sales_quote",
-    description="Create an order in Business Central. The customer is identified automatically from the WhatsApp caller. Just pass the items and quantities.",
+    name="wa_modify_order",
+    description="Modify an existing order for a verified caller. Replaces all items on the order with the new items provided. The caller must own the order.",
 )
-def wa_create_sales_quote(
+def wa_modify_order(
     context: AgentRun,
-    original_message: str,
+    reference_number: str,
     item_id_1: str,
     quantity_1: float,
     item_id_2: str = "",
@@ -84,17 +69,15 @@ def wa_create_sales_quote(
     quantity_9: float = 0,
     item_id_10: str = "",
     quantity_10: float = 0,
-    note: str = "",
 ) -> dict:
-    """Create an order (draft sales quote) in Microsoft Dynamics 365 Business Central.
+    """Modify an existing order (sales quote) in Business Central.
 
-    The customer is resolved automatically from the WhatsApp caller's phone number.
-    For unverified callers (no matching customer), the order is placed under the
-    generic 'Whatsapp Unverified' account (C0012).
+    Replaces all item lines with the new set provided. Only verified callers
+    can modify orders, and only their own orders.
 
     Args:
         context (AgentRun): The agent run context (auto-filled by runtime).
-        original_message (str): The original WhatsApp message for reference.
+        reference_number (str): The order reference number (e.g. SQ0005).
         item_id_1 (str): GUID of the first item (required).
         quantity_1 (float): Quantity for the first item (must be > 0).
         item_id_2 (str): GUID of the second item (optional).
@@ -115,10 +98,9 @@ def wa_create_sales_quote(
         quantity_9 (float): Quantity for the ninth item.
         item_id_10 (str): GUID of the tenth item (optional).
         quantity_10 (float): Quantity for the tenth item.
-        note (str): Optional note added as a Comment line (max 100 chars).
 
     Returns:
-        dict: Keys: success, reference_number, customer_name, lines (with description, quantity, unitPrice, lineAmount), total.
+        dict: Keys: success, reference_number, customer_name, lines, total.
     """
     if not item_id_1 or quantity_1 <= 0:
         raise ValueError("item_id_1 must be provided and quantity_1 must be > 0")
@@ -132,27 +114,70 @@ def wa_create_sales_quote(
         "Content-Type": "application/json",
     }
 
-    # --- Resolve customer from WhatsApp phone number ---
+    # --- Verify caller is a known customer ---
     req_context = context.request_context
     channel = req_context.get("channel", {})
     phone = channel.get("whatsapp", {}).get("user_phone_number", "")
 
-    verified = False
-    customer_id = None
-    if phone:
-        customer = _lookup_customer_by_phone(base, headers, phone)
-        if customer:
-            customer_id = customer["id"]
-            verified = True
+    if not phone:
+        return {"error": "Could not identify caller."}
 
-    # Fallback: unverified caller → use C0012
-    if not customer_id:
-        customer_id = _lookup_customer_by_number(base, headers, "C0012")
-        if not customer_id:
-            return {"error": "Could not find default customer account."}
+    customer = _lookup_customer_by_phone(base, headers, phone)
+    if not customer:
+        return {"error": "Only verified customers can modify orders."}
 
-    # --- Build lines list ---
-    lines = [
+    customer_id = customer["id"]
+
+    # --- Find the quote by reference number ---
+    url = (
+        f"{base}/companies({COMPANY_ID})/salesQuotes"
+        f"?$filter=number eq '{reference_number}'"
+        f"&$top=1"
+    )
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    quotes = resp.json().get("value", [])
+
+    if not quotes:
+        # Check if it was already converted to a salesOrder
+        so_url = (
+            f"{base}/companies({COMPANY_ID})/salesOrders"
+            f"?$filter=number eq '{reference_number}'"
+            f"&$top=1"
+        )
+        so_resp = requests.get(so_url, headers=headers, timeout=30)
+        so_resp.raise_for_status()
+        if so_resp.json().get("value", []):
+            return {"error": "This order has already been processed and can no longer be modified."}
+        return {"error": f"Order {reference_number} not found."}
+
+    quote = quotes[0]
+    quote_id = quote["id"]
+    customer_name = quote.get("customerName", "")
+
+    # --- Verify the caller owns this quote ---
+    if quote.get("customerId") != customer_id:
+        return {"error": "You can only modify your own orders."}
+
+    # --- Delete all existing item lines ---
+    lines_url = f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines"
+    lines_resp = requests.get(lines_url, headers=headers, timeout=30)
+    lines_resp.raise_for_status()
+    existing_lines = lines_resp.json().get("value", [])
+
+    for ln in existing_lines:
+        if ln.get("lineType") == "Item":
+            line_id = ln["id"]
+            line_etag = ln.get("@odata.etag", "")
+            del_headers = {**headers, "If-Match": line_etag}
+            requests.delete(
+                f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines({line_id})",
+                headers=del_headers,
+                timeout=30,
+            )
+
+    # --- Add new item lines ---
+    new_lines = [
         (item_id_1, quantity_1),
         (item_id_2, quantity_2),
         (item_id_3, quantity_3),
@@ -165,43 +190,8 @@ def wa_create_sales_quote(
         (item_id_10, quantity_10),
     ]
 
-    # Prefix with WA-V: (verified) or WA-U: (unverified), then truncate to 35 chars (BC limit)
-    prefix = "WA-V:" if verified else "WA-U:"
-    msg = (original_message or "WhatsApp order").strip()[:30].strip()
-    ext_doc_number = f"{prefix}{msg}"
-
-    # --- Create the quote header ---
-    quote_body = {"customerId": customer_id}
-
-    resp = requests.post(
-        f"{base}/companies({COMPANY_ID})/salesQuotes",
-        headers=headers,
-        json=quote_body,
-        timeout=30,
-    )
-    if not resp.ok:
-        return {"error": f"Failed to create order: {resp.status_code}", "detail": resp.text}
-    quote = resp.json()
-    quote_id = quote["id"]
-    quote_number = quote.get("number", "")
-    customer_name = quote.get("customerName", "")
-    etag = resp.headers.get("ETag", quote.get("@odata.etag", ""))
-
-    # --- Patch the external document number ---
-    patch_headers = {**headers, "If-Match": etag}
-    patch_resp = requests.patch(
-        f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})",
-        headers=patch_headers,
-        json={"externalDocumentNumber": ext_doc_number},
-        timeout=30,
-    )
-    if patch_resp.ok:
-        quote = patch_resp.json()
-        etag = patch_resp.headers.get("ETag", quote.get("@odata.etag", etag))
-
-    # --- Add item lines ---
     lines_added = 0
-    for item_id, qty in lines:
+    for item_id, qty in new_lines:
         if item_id and qty > 0:
             r = requests.post(
                 f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines",
@@ -214,39 +204,21 @@ def wa_create_sales_quote(
                 timeout=30,
             )
             if not r.ok:
-                return {"error": f"Failed to add line for item {item_id}: {r.status_code}", "detail": r.text}
+                return {"error": f"Failed to add item: {r.status_code}", "detail": r.text}
             lines_added += 1
 
-    # --- Add a Comment line for the note (if provided) ---
-    note_text = (note or "").strip()[:100]
-    if note_text:
-        requests.post(
-            f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines",
-            headers=headers,
-            json={
-                "lineType": "Comment",
-                "description": note_text,
-            },
-            timeout=30,
-        )
-
-    # --- Read back the quote to get the total from BC ---
+    # --- Read back the updated quote ---
     quote_resp = requests.get(
         f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})",
         headers=headers,
         timeout=30,
     )
     total = 0.0
-    order_lines = []
     if quote_resp.ok:
         total = quote_resp.json().get("totalAmountExcludingTax", 0)
 
-    # Read back lines with prices
-    lines_resp = requests.get(
-        f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines",
-        headers=headers,
-        timeout=30,
-    )
+    order_lines = []
+    lines_resp = requests.get(lines_url, headers=headers, timeout=30)
     if lines_resp.ok:
         for ln in lines_resp.json().get("value", []):
             if ln.get("lineType") == "Item":
@@ -259,7 +231,7 @@ def wa_create_sales_quote(
 
     return {
         "success": True,
-        "reference_number": quote_number,
+        "reference_number": reference_number,
         "customer_name": customer_name,
         "lines": order_lines,
         "total": round(total, 2),
