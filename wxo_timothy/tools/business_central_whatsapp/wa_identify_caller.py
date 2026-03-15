@@ -12,6 +12,7 @@ from ibm_watsonx_orchestrate.run import connections
 
 MY_APP_ID = "business_central_wa"
 COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
+UNVERIFIED_DISPLAY_NAME = "WhatsApp Unverified"
 
 
 def normalize_phone(phone: str) -> str:
@@ -27,10 +28,10 @@ def _bc_headers(access_token: str) -> dict:
 
 
 def _fetch_customers(base: str, headers: dict) -> list[dict]:
-    """Fetch all customers with phoneNumber from BC."""
+    """Fetch all customers from BC. Only id, displayName, phoneNumber — no customer number."""
     url = (
         f"{base}/companies({COMPANY_ID})/customers"
-        f"?$select=id,number,displayName,phoneNumber"
+        f"?$select=id,displayName,phoneNumber"
         f"&$top=20000"
     )
     resp = requests.get(url, headers=headers, timeout=60)
@@ -47,64 +48,91 @@ def _fetch_customers(base: str, headers: dict) -> list[dict]:
     return customers
 
 
-def _fetch_last_order(base: str, headers: dict, customer_id: str) -> dict | None:
-    """Fetch the most recent sales order for a customer, including its lines.
+def _fetch_lines(base: str, headers: dict, endpoint: str, record_id: str, lines_endpoint: str) -> list[dict]:
+    """Fetch item lines for a sales quote or sales order."""
+    url = f"{base}/companies({COMPANY_ID})/{endpoint}({record_id})/{lines_endpoint}"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return [
+        {
+            "description": ln.get("description", ""),
+            "quantity": ln.get("quantity", 0),
+            "unitPrice": ln.get("unitPrice", 0),
+            "lineAmount": ln.get("amountExcludingTax", 0),
+        }
+        for ln in resp.json().get("value", [])
+        if ln.get("lineType") == "Item"
+    ]
 
-    Checks salesOrders first (real orders), then falls back to salesQuotes.
-    """
-    # Try salesOrders first (SO numbers — real orders)
-    for endpoint, lines_endpoint, date_field in [
-        ("salesOrders", "salesOrderLines", "orderDate"),
-        ("salesQuotes", "salesQuoteLines", "documentDate"),
-    ]:
-        url = (
-            f"{base}/companies({COMPANY_ID})/{endpoint}"
-            f"?$filter=customerId eq {customer_id}"
-            f"&$orderby={date_field} desc"
-            f"&$top=1"
-        )
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        records = resp.json().get("value", [])
-        if not records:
-            continue
 
-        record = records[0]
-        record_id = record["id"]
+def _fetch_order_context(base: str, headers: dict, customer_id: str) -> dict:
+    """Fetch the last shipped order (SO) and any pending quotes (SQ) for a customer."""
+    context = {"last_shipped": None, "pending_quotes": []}
 
-        lines_url = f"{base}/companies({COMPANY_ID})/{endpoint}({record_id})/{lines_endpoint}"
-        lines_resp = requests.get(lines_url, headers=headers, timeout=30)
-        lines_resp.raise_for_status()
-        lines = lines_resp.json().get("value", [])
-
-        item_lines = [
-            {
-                "description": ln.get("description", ""),
-                "quantity": ln.get("quantity", 0),
-                "unitPrice": ln.get("unitPrice", 0),
-                "lineAmount": ln.get("amountExcludingTax", 0),
-            }
-            for ln in lines
-            if ln.get("lineType") == "Item"
-        ]
-
+    so_url = (
+        f"{base}/companies({COMPANY_ID})/salesOrders"
+        f"?$filter=customerId eq {customer_id}"
+        f"&$orderby=orderDate desc"
+        f"&$top=1"
+    )
+    resp = requests.get(so_url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    orders = resp.json().get("value", [])
+    if orders:
+        order = orders[0]
+        item_lines = _fetch_lines(base, headers, "salesOrders", order["id"], "salesOrderLines")
         if item_lines:
-            return {
-                "order_number": record.get("number", ""),
-                "date": record.get(date_field, ""),
+            context["last_shipped"] = {
+                "order_number": order.get("number", ""),
+                "date": order.get("orderDate", ""),
                 "lines": item_lines,
             }
 
-    return None
+    sq_url = (
+        f"{base}/companies({COMPANY_ID})/salesQuotes"
+        f"?$filter=customerId eq {customer_id}"
+        f"&$orderby=documentDate desc"
+        f"&$top=3"
+    )
+    resp = requests.get(sq_url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    for quote in resp.json().get("value", []):
+        item_lines = _fetch_lines(base, headers, "salesQuotes", quote["id"], "salesQuoteLines")
+        if item_lines:
+            context["pending_quotes"].append({
+                "quote_number": quote.get("number", ""),
+                "date": quote.get("documentDate", ""),
+                "lines": item_lines,
+            })
+
+    return context
+
+
+def _fetch_session_quote(base: str, headers: dict, customer_id: str, phone_digits: str) -> str:
+    """Find the most recent SQ for an unverified caller by their phone in externalDocumentNumber."""
+    phone_prefix = f"WA-U:{phone_digits}:"
+    url = (
+        f"{base}/companies({COMPANY_ID})/salesQuotes"
+        f"?$filter=customerId eq {customer_id}"
+        f" and startswith(externalDocumentNumber, '{phone_prefix}')"
+        f"&$orderby=documentDate desc"
+        f"&$top=1"
+        f"&$select=number"
+    )
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    quotes = resp.json().get("value", [])
+    if quotes:
+        return quotes[0].get("number", "")
+    return ""
 
 
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     description=(
-        "Pre-invoke plugin that identifies the WhatsApp caller by looking up "
-        "their phone number in Business Central's customer records. "
-        "For verified callers it also fetches their last order for reorder context. "
-        "This runs as deterministic code — the LLM cannot override it."
+        "Pre-invoke plugin that identifies the WhatsApp caller by phone lookup "
+        "against Business Central customers. Sets context variables: customer_id, "
+        "customer_name, verified, session_quote_id. The LLM never sees these values."
     ),
     kind=PythonToolKind.AGENTPREINVOKE,
     name="wa_identify_caller",
@@ -113,12 +141,9 @@ def wa_identify_caller(
     plugin_context: PluginContext,
     agent_pre_invoke_payload: AgentPreInvokePayload,
 ) -> AgentPreInvokeResult:
-    """Reads the WhatsApp phone number from the runtime channel context,
-    looks it up against BC customer phoneNumber fields, and prepends a
-    verified/unverified note to the latest user message.
-
-    IMPORTANT: Only customer NUMBER (e.g. C0011) is exposed to the LLM,
-    never the raw GUID. Tools resolve numbers to GUIDs internally."""
+    """Identifies the WhatsApp caller by phone lookup against BC customers.
+    Sets context variables for tools. Prepends greeting tag for the LLM.
+    Customer IDs and GUIDs flow through context only — never exposed to the LLM."""
 
     result = AgentPreInvokeResult()
     result.continue_processing = True
@@ -126,8 +151,8 @@ def wa_identify_caller(
 
     # ── Extract channel info from runtime context ────────────────────────
     state = getattr(plugin_context, "state", None) or {}
-    context = state.get("context", {}) if isinstance(state, dict) else {}
-    channel = context.get("channel", {})
+    ctx = state.get("context", {}) if isinstance(state, dict) else {}
+    channel = ctx.get("channel", {})
 
     if channel.get("channel_type") != "whatsapp":
         return result
@@ -140,6 +165,8 @@ def wa_identify_caller(
         return result
 
     caller_phone = normalize_phone(phone)
+    # Phone digits without + for externalDocumentNumber matching
+    phone_digits = caller_phone.lstrip("+")
 
     # ── Look up customer from BC ─────────────────────────────────────────
     customer = None
@@ -151,6 +178,7 @@ def wa_identify_caller(
 
         customers = _fetch_customers(base, headers)
 
+        # Match by phone number
         for c in customers:
             bc_phone = normalize_phone(c.get("phoneNumber", ""))
             if bc_phone and bc_phone == caller_phone:
@@ -158,48 +186,127 @@ def wa_identify_caller(
                 break
 
         if customer:
-            # Try to fetch last order for reorder context
+            # ── Verified caller ──────────────────────────────────────────
+            ctx["customer_id"] = customer["id"]
+            ctx["customer_name"] = customer["displayName"]
+            ctx["verified"] = 1
+            ctx["session_quote_id"] = ""
+
+            # Fetch order history for greeting context
             try:
-                last_quote = _fetch_last_order(base, headers, customer["id"])
-                if last_quote and last_quote["lines"]:
+                order_ctx = _fetch_order_context(base, headers, customer["id"])
+
+                if order_ctx["last_shipped"]:
+                    shipped = order_ctx["last_shipped"]
                     items_str = ", ".join(
                         f"{int(ln['quantity'])} x {ln['description']}"
                         f" @{ln['unitPrice']:.2f}"
-                        for ln in last_quote["lines"]
+                        for ln in shipped["lines"]
                     )
-                    total = sum(ln["lineAmount"] for ln in last_quote["lines"])
+                    total = sum(ln["lineAmount"] for ln in shipped["lines"])
                     last_order_info = (
-                        f" Last order ({last_quote['date']}): "
-                        f"{items_str}. Total: {total:.2f}."
+                        f" Last shipped order {shipped['order_number']}"
+                        f" ({shipped['date']}): {items_str}."
+                        f" Total: {total:.2f}."
+                    )
+
+                if order_ctx["pending_quotes"]:
+                    parts = []
+                    for q in order_ctx["pending_quotes"]:
+                        items_str = ", ".join(
+                            f"{int(ln['quantity'])} x {ln['description']}"
+                            f" @{ln['unitPrice']:.2f}"
+                            for ln in q["lines"]
+                        )
+                        total = sum(ln["lineAmount"] for ln in q["lines"])
+                        parts.append(
+                            f"{q['quote_number']} ({q['date']}): {items_str}."
+                            f" Total: {total:.2f}"
+                        )
+                    last_order_info += (
+                        f" Pending quotes (still being processed):"
+                        f" {'; '.join(parts)}."
                     )
             except Exception:
-                pass  # Non-critical — continue without last order info
+                pass
+
+        else:
+            # ── Unverified caller ────────────────────────────────────────
+            unverified_customer = next(
+                (c for c in customers
+                 if c["displayName"].lower() == UNVERIFIED_DISPLAY_NAME.lower()),
+                None,
+            )
+            ctx["customer_id"] = unverified_customer["id"] if unverified_customer else ""
+            ctx["customer_name"] = ""
+            ctx["verified"] = 0
+
+            session_sq = ""
+            if unverified_customer:
+                try:
+                    session_sq = _fetch_session_quote(
+                        base, headers, unverified_customer["id"], phone_digits,
+                    )
+                except Exception:
+                    pass
+            ctx["session_quote_id"] = session_sq
 
     except Exception:
-        # BC lookup failed — treat as unverified
         customer = None
+        ctx["customer_id"] = ""
+        ctx["customer_name"] = ""
+        ctx["verified"] = 0
+        ctx["session_quote_id"] = ""
 
-    # ── Build the prefix ─────────────────────────────────────────────────
+    # ── Build the prefix (greeting context — NO customer_id or GUID) ─────
     if customer:
         cust_name = customer["displayName"]
         prefix = (
-            f"[VERIFIED CALLER — {user_name}. "
-            f"Customer: {cust_name}.{last_order_info}]"
+            f"[VERIFIED CALLER — Name: {user_name}. "
+            f"Business: {cust_name}. "
+            f"Always greet as 'Hi {user_name} from {cust_name}!'. "
+            f"To cancel orders use wa_cancel_order (one call per reference number).{last_order_info}]"
         )
     else:
         prefix = (
-            f"[UNVERIFIED CALLER — {user_name}. "
+            f"[UNVERIFIED CALLER — Name: {user_name}. Phone: {phone}. "
             f"No account found. "
-            f"Ask for their name, phone number, business, and address. "
-            f"Put that info in the order note.]"
+            f"MANDATORY: Your first action MUST be to call wa_get_inventory. "
+            f"Then show ALL products with prices in your reply. "
+            f"Also ask for business name and delivery address. "
+            f"Combine everything in ONE message. "
+            f"To modify their order use wa_modify_session_quote — NO reference number needed. "
+            f"To cancel use wa_cancel_session_quote. "
+            f"Put all details in the order note.]"
         )
 
-    # ── Trim history to last 20 messages to avoid stale session bleed ────
-    messages = list(agent_pre_invoke_payload.messages)
-    MAX_HISTORY = 20
-    if len(messages) > MAX_HISTORY:
-        messages = messages[-MAX_HISTORY:]
-        agent_pre_invoke_payload.messages = messages
+    # ── Session boundary: trim history in-place ──────────────────────────
+    # WhatsApp threads persist across orders. Old history poisons the LLM.
+    # Modify the list IN-PLACE (assignment doesn't work — property is read-only).
+    import re as _re
+    messages = agent_pre_invoke_payload.messages
+    MAX_HISTORY = 6
+    if messages and len(messages) > 1:
+        # Extract text from latest message to check for greeting
+        last_text = ""
+        lm = messages[-1]
+        if hasattr(lm, "content"):
+            if hasattr(lm.content, "text"):
+                last_text = (lm.content.text or "").strip().lower()
+            elif isinstance(lm.content, str):
+                last_text = lm.content.strip().lower()
+
+        greeting_re = r"^(hello|hi|hey|hallo|hoi|grüezi|guten\s*tag)\b"
+        if _re.match(greeting_re, last_text):
+            # New session → keep only the current message (in-place)
+            keep = messages[-1:]
+            messages.clear()
+            messages.extend(keep)
+        elif len(messages) > MAX_HISTORY:
+            # Trim to last N messages (in-place)
+            keep = messages[-MAX_HISTORY:]
+            messages.clear()
+            messages.extend(keep)
 
     # ── Prepend to the latest user message ───────────────────────────────
     if messages:

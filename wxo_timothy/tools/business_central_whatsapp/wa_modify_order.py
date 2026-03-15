@@ -1,50 +1,19 @@
-import re
 from ibm_watsonx_orchestrate.agent_builder.tools import tool
 from ibm_watsonx_orchestrate.agent_builder.connections import ExpectedCredentials, ConnectionType
 from ibm_watsonx_orchestrate.run import connections
 from ibm_watsonx_orchestrate.run.context import AgentRun
 import requests
 
+from _resolve_customer import resolve_customer
+
 MY_APP_ID = "business_central_wa"
 COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
-
-
-def _normalize_phone(phone: str) -> str:
-    phone = re.sub(r"[\s\-\(\)]", "", phone)
-    if phone.startswith("00"):
-        phone = "+" + phone[2:]
-    return phone
-
-
-def _lookup_customer_by_phone(base: str, headers: dict, phone: str) -> dict | None:
-    """Find a customer by matching their phone number."""
-    caller_phone = _normalize_phone(phone)
-    url = (
-        f"{base}/companies({COMPANY_ID})/customers"
-        f"?$select=id,number,displayName,phoneNumber"
-        f"&$top=20000"
-    )
-    resp = requests.get(url, headers=headers, timeout=60)
-    resp.raise_for_status()
-    payload = resp.json()
-    customers = payload.get("value", [])
-    while "@odata.nextLink" in payload:
-        resp = requests.get(payload["@odata.nextLink"], headers=headers, timeout=60)
-        resp.raise_for_status()
-        payload = resp.json()
-        customers.extend(payload.get("value", []))
-
-    for c in customers:
-        bc_phone = _normalize_phone(c.get("phoneNumber", ""))
-        if bc_phone and bc_phone == caller_phone:
-            return c
-    return None
 
 
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     name="wa_modify_order",
-    description="Modify an existing order for a verified caller. Replaces all items on the order with the new items provided. The caller must own the order.",
+    description="Modify an existing order for a verified caller. The customer is identified automatically from context. Replaces all items on the order.",
 )
 def wa_modify_order(
     context: AgentRun,
@@ -72,8 +41,8 @@ def wa_modify_order(
 ) -> dict:
     """Modify an existing order (sales quote) in Business Central.
 
-    Replaces all item lines with the new set provided. Only verified callers
-    can modify orders, and only their own orders.
+    The customer is resolved from the customer_id context variable. Only verified
+    callers can modify orders, and only their own orders.
 
     Args:
         context (AgentRun): The agent run context (auto-filled by runtime).
@@ -107,45 +76,33 @@ def wa_modify_order(
 
     conn = connections.oauth2_client_creds(MY_APP_ID)
     base = conn.url
-    access_token = conn.access_token
     headers = {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {conn.access_token}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
 
-    # --- Verify caller is a known customer ---
-    req_context = context.request_context
-    channel = req_context.get("channel", {})
-    phone = channel.get("whatsapp", {}).get("user_phone_number", "")
+    # --- Resolve customer from channel phone number ---
+    caller = resolve_customer(context, base, conn.access_token)
+    customer_id = caller["customer_id"]
+    verified = caller["verified"]
 
-    if not phone:
-        return {"error": "Could not identify caller."}
-
-    customer = _lookup_customer_by_phone(base, headers, phone)
-    if not customer:
+    if verified != 1 or not customer_id:
         return {"error": "Only verified customers can modify orders."}
 
-    customer_id = customer["id"]
-
-    # --- Find the quote by reference number ---
-    url = (
-        f"{base}/companies({COMPANY_ID})/salesQuotes"
-        f"?$filter=number eq '{reference_number}'"
-        f"&$top=1"
+    # --- Find the quote ---
+    resp = requests.get(
+        f"{base}/companies({COMPANY_ID})/salesQuotes?$filter=number eq '{reference_number}'&$top=1",
+        headers=headers, timeout=30,
     )
-    resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
     quotes = resp.json().get("value", [])
 
     if not quotes:
-        # Check if it was already converted to a salesOrder
-        so_url = (
-            f"{base}/companies({COMPANY_ID})/salesOrders"
-            f"?$filter=number eq '{reference_number}'"
-            f"&$top=1"
+        so_resp = requests.get(
+            f"{base}/companies({COMPANY_ID})/salesOrders?$filter=number eq '{reference_number}'&$top=1",
+            headers=headers, timeout=30,
         )
-        so_resp = requests.get(so_url, headers=headers, timeout=30)
         so_resp.raise_for_status()
         if so_resp.json().get("value", []):
             return {"error": "This order has already been processed and can no longer be modified."}
@@ -155,67 +112,37 @@ def wa_modify_order(
     quote_id = quote["id"]
     customer_name = quote.get("customerName", "")
 
-    # --- Verify the caller owns this quote ---
     if quote.get("customerId") != customer_id:
         return {"error": "You can only modify your own orders."}
 
-    # --- Delete all existing item lines ---
+    # --- Delete existing item lines ---
     lines_url = f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines"
     lines_resp = requests.get(lines_url, headers=headers, timeout=30)
     lines_resp.raise_for_status()
-    existing_lines = lines_resp.json().get("value", [])
-
-    for ln in existing_lines:
+    for ln in lines_resp.json().get("value", []):
         if ln.get("lineType") == "Item":
-            line_id = ln["id"]
-            line_etag = ln.get("@odata.etag", "")
-            del_headers = {**headers, "If-Match": line_etag}
-            requests.delete(
-                f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines({line_id})",
-                headers=del_headers,
-                timeout=30,
-            )
+            del_headers = {**headers, "If-Match": ln.get("@odata.etag", "")}
+            requests.delete(f"{lines_url}({ln['id']})", headers=del_headers, timeout=30)
 
     # --- Add new item lines ---
     new_lines = [
-        (item_id_1, quantity_1),
-        (item_id_2, quantity_2),
-        (item_id_3, quantity_3),
-        (item_id_4, quantity_4),
-        (item_id_5, quantity_5),
-        (item_id_6, quantity_6),
-        (item_id_7, quantity_7),
-        (item_id_8, quantity_8),
-        (item_id_9, quantity_9),
+        (item_id_1, quantity_1), (item_id_2, quantity_2), (item_id_3, quantity_3),
+        (item_id_4, quantity_4), (item_id_5, quantity_5), (item_id_6, quantity_6),
+        (item_id_7, quantity_7), (item_id_8, quantity_8), (item_id_9, quantity_9),
         (item_id_10, quantity_10),
     ]
-
-    lines_added = 0
     for item_id, qty in new_lines:
         if item_id and qty > 0:
             r = requests.post(
-                f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})/salesQuoteLines",
-                headers=headers,
-                json={
-                    "lineType": "Item",
-                    "itemId": item_id,
-                    "quantity": qty,
-                },
-                timeout=30,
+                lines_url, headers=headers,
+                json={"lineType": "Item", "itemId": item_id, "quantity": qty}, timeout=30,
             )
             if not r.ok:
                 return {"error": f"Failed to add item: {r.status_code}", "detail": r.text}
-            lines_added += 1
 
-    # --- Read back the updated quote ---
-    quote_resp = requests.get(
-        f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})",
-        headers=headers,
-        timeout=30,
-    )
-    total = 0.0
-    if quote_resp.ok:
-        total = quote_resp.json().get("totalAmountExcludingTax", 0)
+    # --- Read back ---
+    quote_resp = requests.get(f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})", headers=headers, timeout=30)
+    total = quote_resp.json().get("totalAmountExcludingTax", 0) if quote_resp.ok else 0.0
 
     order_lines = []
     lines_resp = requests.get(lines_url, headers=headers, timeout=30)
