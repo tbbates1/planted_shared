@@ -11,10 +11,11 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     name="em_create_sales_quote",
-    description="Create an order in Business Central. The customer is identified automatically from context. Just pass items and quantities.",
+    description="Create an order in Business Central. Pass customer_id from the [VERIFIED] tag, plus items and quantities.",
 )
 def em_create_sales_quote(
     context: AgentRun,
+    customer_id: str,
     original_message: str,
     item_id_1: str,
     quantity_1: float,
@@ -83,27 +84,9 @@ def em_create_sales_quote(
         "Content-Type": "application/json",
     }
 
-    # --- Get customer_id from context (set by pre-invoke plugin) ---
-    req_context = context.request_context
-    customer_id = req_context.get("customer_id", "")
-    verified = req_context.get("verified", 0)
-
-    # Fallback: if no customer_id, look up "Email Unverified" customer directly
+    # --- Validate customer_id (passed from [VERIFIED] tag) ---
     if not customer_id:
-        lookup_url = (
-            f"{base}/companies({COMPANY_ID})/customers"
-            f"?$filter=displayName eq 'Email Unverified'"
-            f"&$select=id&$top=1"
-        )
-        lookup_resp = requests.get(lookup_url, headers=headers, timeout=15)
-        if lookup_resp.ok:
-            customers = lookup_resp.json().get("value", [])
-            if customers:
-                customer_id = customers[0]["id"]
-                verified = 0
-
-    if not customer_id:
-        return {"error": "Could not identify customer. Please try again."}
+        return {"error": "customer_id is required. Pass it from the [VERIFIED] tag."}
 
     # --- Build lines list ---
     lines = [
@@ -113,19 +96,9 @@ def em_create_sales_quote(
         (item_id_10, quantity_10),
     ]
 
-    # Tag with sender email for session quote tracking (unverified) or just verified prefix
-    # Extract sender email from original_message [EMAIL: ...] tag
-    import re
-    email_match = re.search(r"\[EMAIL:\s*([^\]|]+)", original_message or "")
-    sender_email = email_match.group(1).strip().lower() if email_match else ""
-    email_key = sender_email.replace("@", "_at_").replace(".", "_")[:20] if sender_email else "unknown"
-
-    if verified == 1:
-        prefix = "EM-V:"
-    else:
-        prefix = f"EM-U:{email_key}:"
+    # Tag the external document number for tracking
     msg = (original_message or "Email order").strip()
-    ext_doc_number = f"{prefix}{msg}"[:35]
+    ext_doc_number = f"EM-V:{msg}"[:35]
 
     # --- Create the quote header ---
     resp = requests.post(

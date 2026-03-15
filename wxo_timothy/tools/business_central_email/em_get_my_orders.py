@@ -11,24 +11,21 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     name="em_get_my_orders",
-    description="Get recent order history. The customer is identified automatically from context. Only works for verified callers.",
+    description="Get recent order history. Pass customer_id from the [VERIFIED] tag.",
 )
-def em_get_my_orders(context: AgentRun, limit: int = 1) -> list[dict]:
-    """Fetch recent orders for the customer identified by context.
+def em_get_my_orders(context: AgentRun, customer_id: str, limit: int = 1) -> list[dict]:
+    """Fetch recent orders for the customer.
 
     Args:
         context (AgentRun): The agent run context (auto-filled by runtime).
+        customer_id (str): Customer GUID from the [VERIFIED] tag.
         limit (int): Number of recent orders to return (default 1, max 5).
 
     Returns:
         list[dict]: Recent orders with keys: reference_number, date, lines, total, editable.
     """
-    req_context = context.request_context
-    customer_id = req_context.get("customer_id", "")
-    verified = req_context.get("verified", 0)
-
-    if verified != 1 or not customer_id:
-        return [{"error": "No account found. Only verified callers can view orders."}]
+    if not customer_id:
+        return [{"error": "customer_id is required. Pass it from the [VERIFIED] tag."}]
 
     limit = max(1, min(limit, 5))
 

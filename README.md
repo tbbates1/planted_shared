@@ -20,6 +20,12 @@
    - [Setting Up the Team Credentials BC Connection](#setting-up-the-team-credentials-bc-connection)
    - [Importing the WhatsApp Tools and Agent](#importing-the-whatsapp-tools-and-agent)
    - [Connecting the WhatsApp Channel](#connecting-the-whatsapp-channel)
+5. [Email Order Agent](#email-order-agent)
+   - [How It Works](#how-it-works)
+   - [Email Bridge Server](#email-bridge-server)
+   - [Importing the Email Tools and Agent](#importing-the-email-tools-and-agent)
+   - [Running the Email Bridge](#running-the-email-bridge)
+   - [Testing](#testing)
 
 ---
 
@@ -998,4 +1004,101 @@ The WhatsApp Order Agent instructions include:
 | `401 Unauthorized` from BC API | Azure app not registered in BC, or permissions not granted | In BC, go to Microsoft Entra Applications and verify the app is Enabled with D365 BUS FULL ACCESS |
 | Quote not appearing in BC | The API call succeeded but the quote is in Draft status | In BC, go to Sales → Sales Quotes and check the "All" filter — draft quotes may be hidden by default |
 | `externalDocumentNumber` is truncated | BC limits this field to 35 characters | This is expected. For longer messages, consider using the BC document attachments API instead |
+
+---
+
+## Email Order Agent
+
+The Email Order Agent allows verified customers to place, modify, and cancel orders by sending emails. It uses the same Business Central backend as the WhatsApp agent.
+
+### How It Works
+
+1. A customer sends an email with their order (e.g. "50 planted.steak Classic and 20 planted.pulled BBQ") to the configured mailbox.
+2. The **email bridge server** (`email_bridge/bridge.py`) polls the mailbox via Microsoft Graph API, picks up the email, and forwards it to the WXO Email Order Agent.
+3. The agent's **pre-invoke plugin** (`em_identify_caller`) looks up the sender's email in Business Central to identify the customer. It prepends a `[VERIFIED customer_id=... business=... ]` tag with the customer's identity and order history.
+4. The agent processes the order immediately — calling `get_inventory` to check stock and `em_create_sales_quote` to place the order.
+5. The bridge sends the agent's reply back as an email.
+
+**Verified customers only.** If the sender's email is not found in Business Central, the agent replies asking them to contact Planted to set up an account.
+
+### Email Bridge Server
+
+The bridge (`email_bridge/bridge.py`) is a Python polling server that:
+- Polls a Microsoft 365 mailbox for new emails via the Graph API
+- Sends each email to the WXO Email Order Agent API
+- Replies to the sender with the agent's response
+- Tracks email conversation threads to WXO message threads for multi-turn support
+- Skips system emails (bounce notifications, Salesforce, etc.)
+
+**Configuration** is in `email_bridge/.env`:
+- `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET` — Azure AD app registration for Graph API
+- `MAILBOX` — The mailbox to poll (e.g. `tim@Planted2.onmicrosoft.com`)
+- `WXO_API_BASE`, `WXO_API_KEY`, `WXO_AGENT_ID` — WXO instance and agent
+- `POLL_INTERVAL` — Seconds between polls (default 5)
+
+### Importing the Email Tools and Agent
+
+```bash
+# Import all email tools
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_identify_caller.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_create_sales_quote.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_get_my_orders.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_modify_order.py -a business_central_wa
+orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_cancel_quote.py -a business_central_wa
+
+# Import the agent
+orchestrate agents import -f wxo_timothy/agents/Email_Order_Agent.yaml
+```
+
+**Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `em_identify_caller` | Pre-invoke plugin. Looks up sender email in BC, prepends verified/unverified tag with order history. |
+| `get_inventory` | Shared with WhatsApp agent. Returns in-stock and out-of-stock product lists. |
+| `em_create_sales_quote` | Creates a sales quote in BC for the verified customer. |
+| `em_get_my_orders` | Returns recent orders (quotes + shipped orders) for the customer. |
+| `em_modify_order` | Modifies a pending order by reference number. Replaces all items. |
+| `em_cancel_quote` | Cancels (deletes) a pending order by reference number. |
+
+### Running the Email Bridge
+
+```bash
+# Set up the .env file first (see email_bridge/.env)
+python3 email_bridge/bridge.py
+```
+
+The bridge will log its activity to stdout:
+```
+Planted Email Bridge Server
+Mailbox: tim@Planted2.onmicrosoft.com
+Microsoft Graph: connected
+Watson X Orchestrate: connected
+Listening for emails...
+```
+
+### Testing
+
+A test script is provided to call the WXO agent directly without sending real emails:
+
+```bash
+# Single message test
+python3 wa_testing/test_email_agent.py "30 planted.steak Classic please"
+
+# Multi-turn test (Python)
+from wa_testing.test_email_agent import send
+reply, thread = send("30 planted.steak Classic please")
+reply, thread = send("Change that to 50", thread_id=thread)
+reply, thread = send("Cancel my order", thread_id=thread)
+```
+
+### Agent Capabilities
+
+| Action | How |
+|--------|-----|
+| Place order | Email with items and quantities. Agent submits immediately. |
+| Modify order | Reply with changes. Agent calls `em_modify_order` with the SQ reference. |
+| Cancel order | Reply asking to cancel. Agent calls `em_cancel_quote` with the SQ reference. |
+| View products | Ask for product list. Agent calls `get_inventory`. |
+| View orders | Ask for order history. Agent calls `em_get_my_orders`. |
 

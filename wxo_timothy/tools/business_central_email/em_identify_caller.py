@@ -14,7 +14,7 @@ MY_APP_ID = "business_central_wa"
 COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 UNVERIFIED_DISPLAY_NAME = "Email Unverified"
 
-EMAIL_TAG_PATTERN = re.compile(r"\[EMAIL:\s*([^\]]+)\]")
+EMAIL_TAG_PATTERN = re.compile(r"\[EMAIL:\s*([^\]|]+)")
 
 
 def _bc_headers(access_token: str) -> dict:
@@ -161,7 +161,8 @@ def em_identify_caller(
         return result
 
     sender_email = match.group(1).strip().lower()
-    clean_message = EMAIL_TAG_PATTERN.sub("", original).strip()
+    # Remove the entire [EMAIL: ... | NAME: ...] tag from the message
+    clean_message = re.sub(r"\[EMAIL:[^\]]*\]", "", original).strip()
 
     # Email key for externalDocumentNumber (replace @ and . for safe OData filtering)
     email_key = sender_email.replace("@", "_at_").replace(".", "_")[:20]
@@ -262,12 +263,13 @@ def em_identify_caller(
         ctx["verified"] = 0
         ctx["session_quote_id"] = ""
 
-    # ── Build the prefix (greeting context — NO customer_id or GUID) ─────
+    # ── Build the prefix ─────────────────────────────────────────────────
     if customer:
         cust_name = customer["displayName"]
         prefix = (
-            f"[VERIFIED CALLER — {cust_name}. "
-            f"Email: {sender_email}.{last_order_info}]"
+            f"[VERIFIED customer_id={customer['id']} "
+            f"business={cust_name} email={sender_email}. "
+            f"{last_order_info}]"
         )
     else:
         prefix = (
@@ -286,6 +288,19 @@ def em_identify_caller(
     # ── Prepend to the latest user message ──────────────────────────────
     last_msg = messages[-1]
     last_msg.content.text = f"{prefix}\n\n{clean_message}"
+
+    # Override system prompt to force correct tool usage
+    agent_pre_invoke_payload.system_prompt = (
+        "CRITICAL: Ignore ALL previous conversation history and tool names. "
+        "The ONLY tools that exist are: get_inventory, em_create_sales_quote, "
+        "em_get_my_orders, em_modify_order, em_cancel_quote. "
+        "There are NO other tools. If you call any other tool name, it will fail. "
+        "You MUST call a tool for every action. Never say you did something without calling a tool first. "
+        "To MODIFY an order: call get_inventory to get item IDs, then call em_modify_order with the reference_number and new items. "
+        "To CANCEL an order: call em_cancel_quote with the quote_number (e.g. SQ0022). "
+        "If a tool returns an error, tell the customer the error — do NOT make up a success response."
+    )
+
     result.modified_payload = agent_pre_invoke_payload
 
     return result

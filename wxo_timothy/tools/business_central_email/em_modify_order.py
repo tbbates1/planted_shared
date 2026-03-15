@@ -11,10 +11,11 @@ COMPANY_ID = "572323a2-e013-f111-8405-7ced8d42f5ae"
 @tool(
     expected_credentials=[ExpectedCredentials(app_id=MY_APP_ID, type=ConnectionType.OAUTH2_CLIENT_CREDS)],
     name="em_modify_order",
-    description="Modify an existing order by reference number. The customer is identified automatically from context. ONLY for verified callers. Replaces all items on the order.",
+    description="Modify an existing order by reference number. Pass customer_id from the [VERIFIED] tag. Replaces all items on the order.",
 )
 def em_modify_order(
     context: AgentRun,
+    customer_id: str,
     reference_number: str,
     item_id_1: str,
     quantity_1: float,
@@ -69,12 +70,8 @@ def em_modify_order(
     Returns:
         dict: Keys: success, reference_number, customer_name, lines, total.
     """
-    req_context = context.request_context
-    customer_id = req_context.get("customer_id", "")
-    verified = req_context.get("verified", 0)
-
-    if verified != 1 or not customer_id:
-        return {"error": "Only verified customers can modify orders."}
+    if not customer_id:
+        return {"error": "customer_id is required. Pass it from the [VERIFIED] tag."}
 
     if not item_id_1 or quantity_1 <= 0:
         raise ValueError("item_id_1 must be provided and quantity_1 must be > 0")

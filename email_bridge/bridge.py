@@ -24,12 +24,13 @@ load_dotenv()
 MS_TENANT_ID = os.environ["MS_TENANT_ID"]
 MS_CLIENT_ID = os.environ["MS_CLIENT_ID"]
 MS_CLIENT_SECRET = os.environ["MS_CLIENT_SECRET"]
-MAILBOX = os.environ["MAILBOX"]
+MAILBOX = os.environ.get("MAILBOX", "tim@Planted2.onmicrosoft.com")
 
 WXO_API_BASE = os.environ["WXO_API_BASE"]
 WXO_API_KEY = os.environ["WXO_API_KEY"]
 WXO_AGENT_ID = os.environ["WXO_AGENT_ID"]
 
+SEND_FROM = os.environ.get("SEND_FROM", "tim@Planted2.onmicrosoft.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 30))
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -115,25 +116,29 @@ def _markdown_to_html(text: str) -> str:
     return html
 
 
-def send_reply(message_id: str, reply_body: str) -> None:
-    """Reply to an email."""
-    url = f"https://graph.microsoft.com/v1.0/users/{MAILBOX}/messages/{message_id}/reply"
+def send_reply(message_id: str, reply_body: str, recipient_email: str, subject: str) -> None:
+    """Reply to an email, sending from the licensed admin account."""
+    url = f"https://graph.microsoft.com/v1.0/users/{SEND_FROM}/sendMail"
     html_body = _markdown_to_html(reply_body)
     resp = requests.post(
         url,
         headers=_graph_headers(),
         json={
             "message": {
+                "subject": f"RE: {subject}" if not subject.upper().startswith("RE:") else subject,
                 "body": {
                     "contentType": "HTML",
                     "content": html_body,
                 },
+                "toRecipients": [
+                    {"emailAddress": {"address": recipient_email}}
+                ],
             },
         },
         timeout=60,
     )
     if not resp.ok:
-        log.error(f"Reply API error {resp.status_code}: {resp.text[:500]}")
+        log.error(f"SendMail API error {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
 
 
@@ -285,7 +290,7 @@ def process_email(email: dict) -> None:
     log.info(f"New email from {sender_name} <{sender_email}>: {subject}")
 
     # Skip emails from ourselves (avoid reply loops)
-    if sender_email.lower() == MAILBOX.lower():
+    if sender_email.lower() in (MAILBOX.lower(), SEND_FROM.lower()):
         log.info("Skipping self-sent email")
         mark_as_read(message_id)
         return
@@ -317,7 +322,7 @@ def process_email(email: dict) -> None:
 
     # Reply to the email
     try:
-        send_reply(message_id, agent_response)
+        send_reply(message_id, agent_response, sender_email, subject)
         log.info(f"Reply sent to {sender_email}")
     except Exception as e:
         log.error(f"Failed to send reply: {e}")
