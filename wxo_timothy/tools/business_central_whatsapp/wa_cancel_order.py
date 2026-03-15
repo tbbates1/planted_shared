@@ -49,6 +49,9 @@ def wa_cancel_order(
     if verified != 1 or not customer_id:
         return {"error": "Only verified customers can cancel orders."}
 
+    # Sanitize reference number
+    reference_number = reference_number.strip().replace("'", "")
+
     # Find the quote
     resp = requests.get(
         f"{base}/companies({COMPANY_ID})/salesQuotes"

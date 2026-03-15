@@ -262,10 +262,15 @@ def wa_identify_caller(
     if customer:
         cust_name = customer["displayName"]
         prefix = (
-            f"[VERIFIED CALLER — Name: {user_name}. "
-            f"Business: {cust_name}. "
-            f"Always greet as 'Hi {user_name} from {cust_name}!'. "
-            f"To cancel orders use wa_cancel_order (one call per reference number).{last_order_info}]"
+            f"[VERIFIED CALLER — Name: {user_name}. Business: {cust_name}. "
+            f"MANDATORY FIRST REPLY: You MUST show the ORDER INFO below and ask what they want to do. "
+            f"Do NOT take any action yet — just show the info and wait. "
+            f"Even if they say 'reorder' or 'I want to order', your first reply MUST be the greeting with order info. "
+            f"AFTER they reply with what they want, THEN take the action. "
+            f"NEVER place an order without wa_preview_order + confirmation. "
+            f"To modify: wa_modify_order. To cancel: wa_cancel_order. To show orders: wa_get_my_orders. To show products: wa_get_inventory. "
+            f"NEVER say 'unable to' — ALWAYS call the tool. "
+            f"ORDER INFO:{last_order_info}]"
         )
     else:
         prefix = (
@@ -280,35 +285,12 @@ def wa_identify_caller(
             f"Put all details in the order note.]"
         )
 
-    # ── Session boundary: trim history in-place ──────────────────────────
-    # WhatsApp threads persist across orders. Old history poisons the LLM.
-    # Modify the list IN-PLACE (assignment doesn't work — property is read-only).
-    import re as _re
-    messages = agent_pre_invoke_payload.messages
-    MAX_HISTORY = 6
-    if messages and len(messages) > 1:
-        # Extract text from latest message to check for greeting
-        last_text = ""
-        lm = messages[-1]
-        if hasattr(lm, "content"):
-            if hasattr(lm.content, "text"):
-                last_text = (lm.content.text or "").strip().lower()
-            elif isinstance(lm.content, str):
-                last_text = lm.content.strip().lower()
-
-        greeting_re = r"^(hello|hi|hey|hallo|hoi|grüezi|guten\s*tag)\b"
-        if _re.match(greeting_re, last_text):
-            # New session → keep only the current message (in-place)
-            keep = messages[-1:]
-            messages.clear()
-            messages.extend(keep)
-        elif len(messages) > MAX_HISTORY:
-            # Trim to last N messages (in-place)
-            keep = messages[-MAX_HISTORY:]
-            messages.clear()
-            messages.extend(keep)
+    # NOTE: History clearing doesn't work — the WXO runtime rebuilds the
+    # message list after the pre-invoke returns. We rely on strong tag
+    # instructions instead to override old conversation patterns.
 
     # ── Prepend to the latest user message ───────────────────────────────
+    messages = agent_pre_invoke_payload.messages
     if messages:
         last_msg = messages[-1]
         original = ""

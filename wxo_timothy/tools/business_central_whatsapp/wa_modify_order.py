@@ -90,6 +90,9 @@ def wa_modify_order(
     if verified != 1 or not customer_id:
         return {"error": "Only verified customers can modify orders."}
 
+    # Sanitize reference number
+    reference_number = reference_number.strip().replace("'", "")
+
     # --- Find the quote ---
     resp = requests.get(
         f"{base}/companies({COMPANY_ID})/salesQuotes?$filter=number eq '{reference_number}'&$top=1",
@@ -122,7 +125,9 @@ def wa_modify_order(
     for ln in lines_resp.json().get("value", []):
         if ln.get("lineType") == "Item":
             del_headers = {**headers, "If-Match": ln.get("@odata.etag", "")}
-            requests.delete(f"{lines_url}({ln['id']})", headers=del_headers, timeout=30)
+            del_resp = requests.delete(f"{lines_url}({ln['id']})", headers=del_headers, timeout=30)
+            if not del_resp.ok:
+                return {"error": f"Failed to remove existing item: {del_resp.status_code}", "detail": del_resp.text}
 
     # --- Add new item lines ---
     new_lines = [

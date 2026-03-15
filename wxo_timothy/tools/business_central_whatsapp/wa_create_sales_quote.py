@@ -140,10 +140,12 @@ def wa_create_sales_quote(
     if phone_digits:
         patch_data["phoneNumber"] = f"+{phone_digits}"
     patch_headers = {**headers, "If-Match": etag}
-    requests.patch(
+    patch_resp = requests.patch(
         f"{base}/companies({COMPANY_ID})/salesQuotes({quote_id})",
         headers=patch_headers, json=patch_data, timeout=30,
     )
+    if patch_resp.ok:
+        etag = patch_resp.headers.get("ETag", patch_resp.json().get("@odata.etag", etag))
 
     # --- Add item lines ---
     for item_id, qty in lines:
