@@ -15,17 +15,11 @@
 3. [Channel Integrations](#channel-integrations)
    - [MS Teams Integration](#ms-teams-integration)
    - [WhatsApp Integration (via Twilio)](#whatsapp-integration-via-twilio)
-4. [WhatsApp Order Agent](#whatsapp-order-agent)
-   - [Architecture Overview](#architecture-overview)
-   - [Setting Up the Team Credentials BC Connection](#setting-up-the-team-credentials-bc-connection)
-   - [Importing the WhatsApp Tools and Agent](#importing-the-whatsapp-tools-and-agent)
-   - [Connecting the WhatsApp Channel](#connecting-the-whatsapp-channel)
-5. [Email Order Agent](#email-order-agent)
-   - [How It Works](#how-it-works)
-   - [Email Bridge Server](#email-bridge-server)
-   - [Importing the Email Tools and Agent](#importing-the-email-tools-and-agent)
-   - [Running the Email Bridge](#running-the-email-bridge)
-   - [Testing](#testing)
+4. [Shop Agent](#shop-agent)
+   - [Architecture Overview](#architecture-overview-1)
+   - [Tools](#shop-tools)
+   - [Importing the Shop Tools and Agent](#importing-the-shop-tools-and-agent)
+   - [Agent Capabilities](#agent-capabilities-1)
 
 ---
 
@@ -743,43 +737,28 @@ WhatsApp does not render markdown tables (pipes and dashes). Agent responses tha
 
 ---
 
-## WhatsApp Order Agent
+## Shop Agent
 
-The **WhatsApp Order Agent** is a standalone agent purpose-built for WhatsApp. It connects to Business Central using **team credentials** (OAuth2 Client Credentials) so that it works without requiring each WhatsApp user to log in via a browser. Customers and sales reps can place orders via WhatsApp — orders are created as **sales quotes** in BC, which the sales team reviews and converts to sales orders with one click.
+The **Shop Agent** is a standalone agent for the direct-chat (store) channel. It handles the full order lifecycle — product browsing, order placement, modifications, cancellations, and reorders — via the watsonx Orchestrate webchat UI. Like the WhatsApp and Email agents, it connects to Business Central using **team credentials** (OAuth2 Client Credentials) and creates orders as **sales quotes**.
 
 ### Why a Separate Agent?
 
-The main Planted Sales Agent uses **member credentials** (per-user OAuth login), which requires a browser redirect to authenticate. This works in the WXO web UI but **not in WhatsApp** — there is no way to trigger an OAuth login flow in a chat message. Without valid credentials, the agent's tools fail silently and the LLM fabricates data instead of returning real results.
-
-The WhatsApp Order Agent solves this by using a **separate Business Central connection with team credentials** — a shared service account that authenticates via client ID and secret, with no user interaction required.
-
-### Why Sales Quotes (Not Sales Orders)?
-
-Orders created via WhatsApp go into BC as **sales quotes** (not sales orders) so that:
-
-- The quote sits in **Draft** status until someone on the sales team reviews it
-- The reviewer can verify quantities, pricing, and customer details
-- Converting a quote to a sales order is a single click in BC (**Make Order**)
-- The original WhatsApp message is stored in the `externalDocumentNumber` field for traceability
-
-This prevents accidental orders from going straight to fulfillment.
-
----
+The Shop Agent is designed for the webchat channel where customers interact directly. Unlike the WhatsApp agent (which uses a Twilio bridge) or the Email agent (which uses a polling bridge), the Shop Agent runs natively in the WXO webchat with no external bridge required. It uses the same `business_central_wa` team credentials connection as the WhatsApp and Email agents.
 
 ### Architecture Overview
 
 ```
-WhatsApp User
+Customer (WXO Webchat)
     │
     ▼
-Twilio (WhatsApp Sender +15559470078)
-    │  webhook (HTTP POST)
-    ▼
-watsonx Orchestrate — WhatsApp Order Agent
+watsonx Orchestrate — Shop Agent
     │
-    ├── wa_get_customers    ──► BC API (team creds)
-    ├── wa_get_inventory    ──► BC API (team creds)
-    └── wa_create_sales_quote ──► BC API (team creds)
+    ├── shop_identify_customer   ──► BC API (team creds)
+    ├── shop_get_products        ──► BC API (team creds)
+    ├── shop_get_orders          ──► BC API (team creds)
+    ├── shop_create_order        ──► BC API (team creds)
+    ├── shop_modify_order        ──► BC API (team creds)
+    └── shop_cancel_order        ──► BC API (team creds)
     │
     ▼
 Business Central — Sales Quotes
@@ -790,125 +769,47 @@ Business Central — Sales Orders
 
 | Component | Details |
 |---|---|
-| Agent | `WhatsApp_Quote_Agent` — standalone, no sub-agents |
+| Agent | `Shop_Agent` — standalone, no sub-agents |
 | Connection | `business_central_wa` — OAuth2 Client Credentials, team type |
-| Tools | `wa_get_customers`, `wa_get_inventory`, `wa_create_sales_quote` |
-| Channel | Twilio WhatsApp (`twilio_whatsapp`) |
+| Tools | 6 tools in `shop_agent/tools/business_central_shop/` |
+| Channel | WXO webchat (direct chat) |
+| LLM | `groq/openai/gpt-oss-120b` |
 
 ---
 
-### Setting Up the Team Credentials BC Connection
+### Tools
 
-This connection uses **OAuth2 Client Credentials** with a **separate Azure app registration** — it does not share the app used by the member-credentials connection, so there is no risk of breaking the existing Planted Sales Agent.
-
-#### Part 1: Register a New App in Microsoft Entra ID (Azure AD)
-
-1. Go to [portal.azure.com](https://portal.azure.com) → **App registrations** → **New registration**.
-2. Name it something like `Whatsapp Business Central Agent`.
-3. Set **Supported account types** to `My organization only`.
-4. No redirect URI is needed (client credentials flow does not use redirects).
-5. Click **Register**.
-
-From the **Overview** page, note down:
-- **Application (client) ID** — e.g. `ee7f342c-dadd-446e-9dd7-7a5060d03e64`
-- **Directory (tenant) ID** — e.g. `4058ede8-b1f2-4dd6-8854-b95dda221d20`
-
-Go to **Certificates & secrets → Client secrets**, click **New client secret**, and copy the **Value** immediately — it is only shown once.
-
-#### Part 2: Add Application Permissions
-
-1. Go to **API permissions** → **Add a permission** → **Dynamics 365 Business Central**.
-2. Select **Application permissions** (not Delegated).
-3. Check both:
-   - **`app_access`** — Access according to the application's permissions in Dynamics 365 Business Central
-   - **`API.ReadWrite.All`** — Full access to web services API
-4. Click **Add permissions**.
-5. Click **Grant admin consent for [your tenant]** — both permissions should show green checkmarks with "Granted" status.
-
-> **Note:** These are Application permissions, not Delegated permissions. Application permissions allow the app to authenticate as itself (no user involved), which is what the client credentials flow requires.
-
-#### Part 3: Register the App in Business Central
-
-Business Central needs to know about this Azure app and what permissions it has.
-
-1. In Business Central, search for **"Microsoft Entra Applications"** (or "Azure Active Directory Applications").
-2. Click **New**.
-3. Enter the **Client ID** from the Azure app registration.
-4. Set **Description** to e.g. `WhatsApp Agent`.
-5. Set **State** to **Enabled**.
-6. Under **User Permission Sets**, add **`D365 BUS FULL ACCESS`** (Dyn. 365 Full Business Access) with scope **System**.
-
-This grants the app full access to customers, items, sales quotes, and sales orders.
-
-#### Part 4: Create the Connection in watsonx Orchestrate
-
-Import the connection YAML:
-
-```bash
-orchestrate connections import -f wxo_timothy/connections/business_central_team.yaml
-```
-
-Then set credentials for both environments:
-
-```bash
-orchestrate connections set-credentials -a business_central_wa \
-  --env draft \
-  --client-id '<YOUR_CLIENT_ID>' \
-  --client-secret '<YOUR_CLIENT_SECRET>' \
-  --token-url 'https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/token' \
-  --scope 'https://api.businesscentral.dynamics.com/.default' \
-  --send-via header
-```
-
-```bash
-orchestrate connections set-credentials -a business_central_wa \
-  --env live \
-  --client-id '<YOUR_CLIENT_ID>' \
-  --client-secret '<YOUR_CLIENT_SECRET>' \
-  --token-url 'https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/token' \
-  --scope 'https://api.businesscentral.dynamics.com/.default' \
-  --send-via header
-```
-
-To verify the connection appears in the WXO UI, go to **Manage → Connections** — it should show `business_central_wa` with green checkmarks for OAuth2 (Client Credentials) and Team credentials on both Draft and Live.
-
-> **Note:** The `orchestrate connections list` CLI command may show a red ❌ for OAuth connections even when credentials are correctly set. This is expected — OAuth credentials show as "not set" until a runtime token exchange occurs. Verify via the WXO UI instead.
-
----
-
-### Importing the WhatsApp Tools and Agent
-
-#### Tools
-
-The three tools are in `wxo_timothy/tools/business_central_whatsapp/`:
+The six tools are in `shop_agent/tools/business_central_shop/`:
 
 | Tool | File | Description |
 |---|---|---|
-| `wa_get_customers` | `wa_get_customers.py` | Look up customers by name, returns ID, number, and display name |
-| `wa_get_inventory` | `wa_get_inventory.py` | Check available products and stock levels |
-| `wa_create_sales_quote` | `wa_create_sales_quote.py` | Create a draft sales quote with up to 10 line items. Stores the original WhatsApp message in `externalDocumentNumber` |
+| `shop_identify_customer` | `shop_identify_customer.py` | Look up a customer by name or email. Returns customer_id, business name, last shipped order, and pending orders. Must be called first. |
+| `shop_get_products` | `shop_get_products.py` | Get all Planted products with prices and stock status. Returns `in_stock` and `out_of_stock` lists. |
+| `shop_get_orders` | `shop_get_orders.py` | Get recent order history for a customer — both shipped (non-editable) and pending (editable) orders. |
+| `shop_create_order` | `shop_create_order.py` | Create a new order (sales quote) with up to 10 line items and an optional note. |
+| `shop_modify_order` | `shop_modify_order.py` | Modify a pending order by reference number. Replaces ALL items — must include every item the order should have after changes. |
+| `shop_cancel_order` | `shop_cancel_order.py` | Cancel a pending order (SQ####) by reference number. Shipped orders (SO) cannot be cancelled. |
 
-All three tools use `ConnectionType.OAUTH2_CLIENT_CREDS` and fetch credentials via `connections.oauth2_client_creds("business_central_wa")`.
+All tools use `ConnectionType.OAUTH2_CLIENT_CREDS` and fetch credentials via `connections.oauth2_client_creds("business_central_wa")`.
 
-Import them in order, binding each to the `business_central_wa` connection:
+---
+
+### Importing the Shop Tools and Agent
 
 ```bash
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_get_customers.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_get_inventory.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_whatsapp/wa_create_sales_quote.py -a business_central_wa
+# Import all shop tools
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_identify_customer.py -a business_central_wa
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_get_products.py -a business_central_wa
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_get_orders.py -a business_central_wa
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_create_order.py -a business_central_wa
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_modify_order.py -a business_central_wa
+orchestrate tools import -k python -f shop_agent/tools/business_central_shop/shop_cancel_order.py -a business_central_wa
+
+# Import the agent
+orchestrate agents import -f shop_agent/agents/Shop_Agent.yaml
 ```
 
 > **Important:** The `-a business_central_wa` flag binds each tool to the connection. Without this, the tool will import but fail at runtime when it tries to fetch credentials.
-
-#### Agent
-
-Import the agent:
-
-```bash
-orchestrate agents import -f wxo_timothy/agents/WhatsApp_Quote_Agent.yaml
-```
-
-The agent YAML references the three tools by name. If the tools were not imported first, the agent import will fail.
 
 To verify:
 
@@ -916,189 +817,31 @@ To verify:
 orchestrate agents list -v
 ```
 
-Confirm that `WhatsApp_Quote_Agent` appears with three tools attached.
+Confirm that `Shop_Agent` appears with six tools attached.
 
 ---
-
-### Connecting the WhatsApp Channel
-
-This assumes you already have a registered WhatsApp sender in Twilio (see [WhatsApp Integration via Twilio](#whatsapp-integration-via-twilio) for sender setup).
-
-#### Step 1: Import the Channel
-
-Create a temporary YAML file with your real Twilio credentials (do not commit this file):
-
-```yaml
-name: "WhatsApp Orders"
-description: "Planted WhatsApp order agent for draft sales quotes"
-channel: "twilio_whatsapp"
-spec_version: "v1"
-kind: "channel"
-account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-twilio_authentication_token: "your_auth_token_here"
-```
-
-Import it:
-
-```bash
-orchestrate channels import --agent-name WhatsApp_Quote_Agent --env draft --file /path/to/channel.yaml
-```
-
-Copy the **Event URL** from the output.
-
-#### Step 2: Update the Twilio Webhook
-
-1. In the Twilio Console, go to **Messaging → Senders → WhatsApp Senders**.
-2. Click **Edit Sender** on your WhatsApp number.
-3. Under **Messaging Endpoint Configuration**, paste the Event URL into **"Webhook URL for incoming messages"**.
-4. Set method to **HTTP Post**.
-5. Click **Update WhatsApp Sender**.
-
-> **Note:** A single Twilio WhatsApp sender can only point to one webhook URL at a time. If you previously had the Planted Sales Agent connected, the webhook will now route to the WhatsApp Order Agent instead. To switch back, update the webhook URL to the Planted Sales Agent's Event URL.
-
-#### Step 3: Test
-
-Send a WhatsApp message to your registered number:
-
-> "200 pcs planted.chicken Nature and 100 pcs planted.nuggets for Migros"
-
-The agent should:
-1. Look up Migros via `wa_get_customers`
-2. Look up the items via `wa_get_inventory`
-3. Confirm the order details before creating
-4. Create the sales quote in BC via `wa_create_sales_quote`
-5. Return a confirmation with the quote number
-
-Check Business Central under **Sales → Sales Quotes** to verify the quote appeared.
-
-#### Step 4: Deploy to Live
-
-```bash
-orchestrate channels import --agent-name WhatsApp_Quote_Agent --env live --file /path/to/channel.yaml
-```
-
-Update the Twilio webhook URL to the new live Event URL.
-
----
-
-### Agent Behavior Notes
-
-The WhatsApp Order Agent instructions include:
-
-- **Real product catalog** — all Planted products (planted.steak, planted.chicken, planted.pulled, planted.nuggets, etc.)
-- **Real customer list** — Migros, Coop, Aldi Suisse, Lidl, REWE, Edeka, Kaufland, etc.
-- **Confirmation step** — the agent always summarizes the order and asks for confirmation before creating the quote
-- **WhatsApp-friendly formatting** — numbered lists instead of markdown tables
-- **Anti-hallucination rules** — if a tool fails, the agent reports the error instead of making up data
-- **Original message tracking** — the customer's original WhatsApp message is stored in the `externalDocumentNumber` field on the sales quote (truncated to 35 characters, which is BC's limit)
-
----
-
-### Troubleshooting
-
-| Issue | Cause | Fix |
-|---|---|---|
-| "business_central_wa needs to be connected with your team credentials" | OAuth connections do not work on external channels (WhatsApp, Teams) — this is a platform limitation | Switch to a **Key-Value connection** and handle the OAuth token exchange manually in the Python tool code. OAuth connections only work in the WXO webchat UI |
-| Token exchange works in webchat but fails on WhatsApp/Teams | Same root cause — OAuth is webchat-only | Use Key-Value connections for any tools that need to work on external channels |
-| Agent returns fabricated product data | Tools are not attached to the agent, or connection binding is missing | Re-import tools with `-a business_central_wa` flag, then re-import the agent |
-| `401 Unauthorized` from BC API | Azure app not registered in BC, or permissions not granted | In BC, go to Microsoft Entra Applications and verify the app is Enabled with D365 BUS FULL ACCESS |
-| Quote not appearing in BC | The API call succeeded but the quote is in Draft status | In BC, go to Sales → Sales Quotes and check the "All" filter — draft quotes may be hidden by default |
-| `externalDocumentNumber` is truncated | BC limits this field to 35 characters | This is expected. For longer messages, consider using the BC document attachments API instead |
-
----
-
-## Email Order Agent
-
-The Email Order Agent allows verified customers to place, modify, and cancel orders by sending emails. It uses the same Business Central backend as the WhatsApp agent.
-
-### How It Works
-
-1. A customer sends an email with their order (e.g. "50 planted.steak Classic and 20 planted.pulled BBQ") to the configured mailbox.
-2. The **email bridge server** (`email_bridge/bridge.py`) polls the mailbox via Microsoft Graph API, picks up the email, and forwards it to the WXO Email Order Agent.
-3. The agent's **pre-invoke plugin** (`em_identify_caller`) looks up the sender's email in Business Central to identify the customer. It prepends a `[VERIFIED customer_id=... business=... ]` tag with the customer's identity and order history.
-4. The agent processes the order immediately — calling `get_inventory` to check stock and `em_create_sales_quote` to place the order.
-5. The bridge sends the agent's reply back as an email.
-
-**Verified customers only.** If the sender's email is not found in Business Central, the agent replies asking them to contact Planted to set up an account.
-
-### Email Bridge Server
-
-The bridge (`email_bridge/bridge.py`) is a Python polling server that:
-- Polls a Microsoft 365 mailbox for new emails via the Graph API
-- Sends each email to the WXO Email Order Agent API
-- Replies to the sender with the agent's response
-- Tracks email conversation threads to WXO message threads for multi-turn support
-- Skips system emails (bounce notifications, Salesforce, etc.)
-
-**Configuration** is in `email_bridge/.env`:
-- `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET` — Azure AD app registration for Graph API
-- `MAILBOX` — The mailbox to poll (e.g. `tim@Planted2.onmicrosoft.com`)
-- `WXO_API_BASE`, `WXO_API_KEY`, `WXO_AGENT_ID` — WXO instance and agent
-- `POLL_INTERVAL` — Seconds between polls (default 5)
-
-### Importing the Email Tools and Agent
-
-```bash
-# Import all email tools
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_identify_caller.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_create_sales_quote.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_get_my_orders.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_modify_order.py -a business_central_wa
-orchestrate tools import -k python -f wxo_timothy/tools/business_central_email/em_cancel_quote.py -a business_central_wa
-
-# Import the agent
-orchestrate agents import -f wxo_timothy/agents/Email_Order_Agent.yaml
-```
-
-**Tools:**
-
-| Tool | Description |
-|------|-------------|
-| `em_identify_caller` | Pre-invoke plugin. Looks up sender email in BC, prepends verified/unverified tag with order history. |
-| `get_inventory` | Shared with WhatsApp agent. Returns in-stock and out-of-stock product lists. |
-| `em_create_sales_quote` | Creates a sales quote in BC for the verified customer. |
-| `em_get_my_orders` | Returns recent orders (quotes + shipped orders) for the customer. |
-| `em_modify_order` | Modifies a pending order by reference number. Replaces all items. |
-| `em_cancel_quote` | Cancels (deletes) a pending order by reference number. |
-
-### Running the Email Bridge
-
-```bash
-# Set up the .env file first (see email_bridge/.env)
-python3 email_bridge/bridge.py
-```
-
-The bridge will log its activity to stdout:
-```
-Planted Email Bridge Server
-Mailbox: tim@Planted2.onmicrosoft.com
-Microsoft Graph: connected
-Watson X Orchestrate: connected
-Listening for emails...
-```
-
-### Testing
-
-A test script is provided to call the WXO agent directly without sending real emails:
-
-```bash
-# Single message test
-python3 wa_testing/test_email_agent.py "30 planted.steak Classic please"
-
-# Multi-turn test (Python)
-from wa_testing.test_email_agent import send
-reply, thread = send("30 planted.steak Classic please")
-reply, thread = send("Change that to 50", thread_id=thread)
-reply, thread = send("Cancel my order", thread_id=thread)
-```
 
 ### Agent Capabilities
 
 | Action | How |
 |--------|-----|
-| Place order | Email with items and quantities. Agent submits immediately. |
-| Modify order | Reply with changes. Agent calls `em_modify_order` with the SQ reference. |
-| Cancel order | Reply asking to cancel. Agent calls `em_cancel_quote` with the SQ reference. |
-| View products | Ask for product list. Agent calls `get_inventory`. |
-| View orders | Ask for order history. Agent calls `em_get_my_orders`. |
+| Identify customer | Customer provides company name or email. Agent calls `shop_identify_customer` and greets them with their business name, last shipped order, and pending orders. |
+| Show products | Agent calls `shop_get_products`. Shows only in-stock items with name and unit price (CHF). |
+| Show orders | Agent calls `shop_get_orders`. Shows pending (editable) and shipped orders separately with reference numbers. |
+| Place order | Customer requests items and quantities. Agent calls `shop_get_products` for item IDs, then `shop_create_order`. No confirmation step — order is created immediately. |
+| Modify order | Customer asks to change a pending order. Agent calls `shop_modify_order` with the COMPLETE new item list (replaces all items). |
+| Cancel order | Customer asks to cancel a pending order (SQ####). Agent calls `shop_cancel_order`. Shipped orders cannot be cancelled. |
+| Reorder last order | Agent uses the last shipped order from `shop_identify_customer`, checks stock via `shop_get_products`, and creates a new order with available items. |
+
+### Key Differences from WhatsApp and Email Agents
+
+| | Shop Agent | WhatsApp Agent | Email Agent |
+|---|---|---|---|
+| Channel | WXO webchat | Twilio WhatsApp (via bridge) | Email (via polling bridge) |
+| Bridge required | No | Yes (`wa_bridge/bridge.py`) | Yes (`email_bridge/bridge.py`) |
+| Customer identification | Customer provides name/email in chat | Phone number (pre-invoke plugin) | Sender email (pre-invoke plugin) |
+| Order modification | Yes (`shop_modify_order`) | Yes (`wa_cancel_order_compat`) | Yes (`em_modify_order`) |
+| Order cancellation | Yes (`shop_cancel_order`) | Yes (`wa_cancel_quote`) | Yes (`em_cancel_quote`) |
+| Reorder support | Yes (from last shipped order) | No | No |
+| Tools | 6 | 6 | 5 + pre-invoke |
 
