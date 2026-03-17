@@ -2,31 +2,7 @@
 
 ## How It Works
 
-```
-                                          Azure
-                               ┌─────────────────────────────────┐
-                               │  Entra ID     Business Central  │
-           watsonx             │                                 │
-          Orchestrate          │  Identity &   Get customer      │
-         ┌──────────┐         │  Authorizat.  details           │
-         │          │         │                                 │
-  ┌──────┤ Webshop  ├─────────┤               Get customer      │
-  │      │  Agent   │         │               orders            │
-  │      │          │         │                                 │
-  │      └──────────┘         │               Get products      │
-  │                            └─────────────────────────────────┘
-  │
-  │  Channels:
-  ├── WhatsApp (text & voice)
-  ├── Custom front-end / Webchat
-  └── Email
-```
-
-**Order flow:**
-1. User sends order request to the webshop agent, along with user context (name, ID, phone number, etc.)
-2. Webshop agent retrieves product details and order history from Business Central
-3. Agent matches the order request to products and creates the corresponding sales quote
-4. Agent sends the quote confirmation back to the user
+![Webshop Agent Architecture — channels, watsonx Orchestrate, Azure Entra ID, Business Central](photos/029.png)
 
 ---
 
