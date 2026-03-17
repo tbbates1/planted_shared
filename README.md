@@ -1,8 +1,10 @@
 # Planted Sales Agent Documentation
 
-## How It Works
+## Architecture Diagram
 
 ![Webshop Agent Architecture — channels, watsonx Orchestrate, Azure Entra ID, Business Central](photos/029.png)
+
+**Current status:** The Business Central connection, agent, and all tools are implemented and functional. The next step is adding a secure customer-facing frontend with authentication (e.g. login portal, WhatsApp phone verification, or email identity).
 
 ---
 
