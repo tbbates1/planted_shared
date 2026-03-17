@@ -1,6 +1,12 @@
 .DS_Store
 venv/
+.venv/
 __pycache__/
 wxo_henrique/
 .claude-docs/
 .env
+archive/
+name_timothy/
+wxo_planted_henrique/
+henrique.zip
+photos/

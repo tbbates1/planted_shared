@@ -1,7 +1,0 @@
-name: "WhatsApp Orders"
-description: "Planted WhatsApp order agent for draft sales quotes"
-channel: "twilio_whatsapp"
-spec_version: "v1"
-kind: "channel"
-account_sid: "${TWILIO_ACCOUNT_SID}"
-twilio_authentication_token: "${TWILIO_AUTH_TOKEN}"
