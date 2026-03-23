@@ -1,0 +1,12 @@
+spec_version: v1
+kind: connection
+app_id: sendgrid_email
+environments:
+  draft:
+    kind: api_key
+    type: team
+    server_url: https://api.sendgrid.com
+  live:
+    kind: api_key
+    type: team
+    server_url: https://api.sendgrid.com

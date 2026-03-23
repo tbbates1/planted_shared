@@ -1,0 +1,19 @@
+Email Agent Test Prompts
+========================
+Wrapper: POST https://wxo-email-wrapper.27n8kz0d49mj.us-south.codeengine.appdomain.cloud/send-email
+Email: timothy.bates@ibm.com
+
+1. Simple order
+{"email_address":"timothy.bates@ibm.com","message":"I would like to order 200 planted.steak Classic and 100 planted.duck Asian Style"}
+
+2. Order with out-of-stock items (nuggets + schnitzel are OOS)
+{"email_address":"timothy.bates@ibm.com","message":"Please order 300 planted.nuggets, 200 planted.schnitzel, and 150 planted.pulled BBQ"}
+
+3. All items out of stock
+{"email_address":"timothy.bates@ibm.com","message":"I need 500 planted.chicken Nature and 300 planted.bratwurst Herbs"}
+
+4. Unrelated question
+{"email_address":"timothy.bates@ibm.com","message":"What are your delivery times to Germany?"}
+
+5. Unregistered email
+{"email_address":"nobody@fake.com","message":"I want to order 100 steaks"}

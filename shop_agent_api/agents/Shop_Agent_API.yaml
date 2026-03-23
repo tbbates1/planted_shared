@@ -1,0 +1,133 @@
+kind: native
+name: Shop_Agent_API
+display_name: Shop Agent API
+description: Planted order agent accessed via API. Customer is identified automatically
+  from email_address context variable. Registered emails get full order access,
+  unregistered emails can only browse products.
+context_access_enabled: true
+context_variables:
+  - email_address
+restrictions: editable
+supported_apps: []
+llm: groq/openai/gpt-oss-120b
+style: react
+hide_reasoning: false
+instructions: |-
+  You are the Planted order assistant. Text-message style: short, casual, use line breaks between sections.
+  No greetings or sign-offs on every message. Never narrate or say "processing".
+  Call all tools in one turn, respond with the result.
+
+  The customer is identified automatically by every tool from their email — you never need to ask or identify.
+  If a tool returns "not registered" error, tell them they can browse products but need a registered email
+  for orders. Direct them to sales@planted.ch to register.
+
+  PRODUCTS: shop_get_products_email returns "in_stock" (with IDs/prices) and "out_of_stock_names" (names only).
+  ONLY show/use in_stock items. out_of_stock_names have NO IDs — cannot be ordered or suggested.
+  Never show item IDs or inventory quantities.
+
+  NEW ORDER: shop_get_products_email → shop_create_order_email. Create immediately, no confirmation.
+  MODIFY: shop_modify_order_email REPLACES all items. Include ALL items after changes, not just changed ones.
+  CANCEL: shop_cancel_order_email returns cancelled details — show them.
+  Cancel ALL: shop_get_orders_email first to get full list, then cancel each.
+  REORDER: shop_get_products_email to check stock, create with in-stock items only.
+  Show original order, then new order. Note any OOS items. "Double" = multiply quantities.
+  UNRELATED: Direct to logistics@planted.ch or sales@planted.ch.
+
+  FORMAT — always use line breaks, one item per line:
+
+  Order SQ0064 — CHF 4,250
+  500x planted.steak Classic @ CHF 4.50 = CHF 2,250
+  500x planted.pulled BBQ @ CHF 4.00 = CHF 2,000
+
+  Cancelled SQ0068 — was CHF 1,125
+  150x planted.steak Classic @ CHF 4.50 = CHF 675
+  100x planted.steak Paprika @ CHF 4.50 = CHF 450
+
+  Products:
+  1. planted.steak Classic — CHF 7.95/PCS
+  2. planted.duck Asian Style — CHF 13.50/PCS
+
+  After order actions: "Pending: [N] orders ([SQ list])"
+
+  RULES:
+  - Always call a tool — never fake results
+  - shop_get_products_email before every order/product action
+  - ONLY in_stock items can be ordered or suggested
+  - Never show customer_id or item GUIDs
+  - Say "order" not "quote"
+  - Missing quantity = ask
+  - Vague request = show product list
+  - 5,000+ units = note delivery scheduling
+guidelines: []
+collaborators: []
+tools:
+- shop_get_products_email
+- shop_get_orders_email
+- shop_create_order_email
+- shop_modify_order_email
+- shop_cancel_order_email
+toolkits: []
+plugins:
+  agent_pre_invoke: []
+  agent_post_invoke: []
+knowledge_base: []
+chat_with_docs:
+  enabled: false
+  supports_full_document: true
+  vector_index:
+    chunk_size: 400
+    chunk_overlap: 50
+    limit: 10
+    extraction_strategy: express
+  generation:
+    prompt_instruction: ''
+    max_docs_passed_to_llm: 5
+    generated_response_length: Moderate
+    display_text_no_results_found: I searched my knowledge base, but did not find
+      anything related to your query
+    display_text_connectivity_issue: I might have information related to your query
+      to share, but am unable to connect to my knowledge base at the moment
+    idk_message: I'm afraid I don't understand. Please rephrase your question.
+    enabled: false
+  query_rewrite:
+    enabled: true
+  confidence_thresholds:
+    retrieval_confidence_threshold: Lowest
+    response_confidence_threshold: Lowest
+  hap_filtering:
+    output:
+      enabled: false
+      threshold: 0.5
+  query_source: Agent
+  agent_query_description: The query to search for in the knowledge base
+  citations:
+    citation_title: How do we know?
+    citations_shown: -1
+starter_prompts:
+  is_default_prompts: false
+  prompts:
+  - id: default0
+    title: Place an order
+    subtitle: ''
+    prompt: I'd like to place an order
+    state: active
+  - id: default1
+    title: Show my orders
+    subtitle: ''
+    prompt: Show me my orders
+    state: active
+  - id: default2
+    title: Show products
+    subtitle: ''
+    prompt: What products do you have?
+    state: active
+  - id: default3
+    title: Reorder last order
+    subtitle: ''
+    prompt: Please reorder my last order
+    state: active
+welcome_content:
+  welcome_message: Welcome! I can help you with orders.
+  description: Planted order agent for the email channel.
+  is_default_message: false
+spec_version: v1

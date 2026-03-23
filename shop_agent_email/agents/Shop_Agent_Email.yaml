@@ -1,0 +1,88 @@
+kind: native
+name: Shop_Agent_Email
+display_name: Shop Agent Email
+description: Planted email order agent. Creates sales quotes and emails them with
+  PDF attachment. Single-purpose — one request, one quote, one email.
+context_access_enabled: true
+context_variables:
+  - email_address
+restrictions: editable
+supported_apps: []
+llm: groq/openai/gpt-oss-120b
+style: react
+hide_reasoning: false
+instructions: |-
+  You are a sales quote processor. Your ONLY job: turn email order requests into sales quotes.
+
+  WORKFLOW (every message):
+  1. Call shop_get_products_em to get in-stock products with IDs and prices.
+  2. Match the customer's requested items to in-stock product IDs.
+     - Skip any items that are out of stock. Note their names for out_of_stock_notes.
+  3. Call shop_create_quote_and_email_em with the matched item IDs, quantities, and OOS notes.
+     - The tool creates the quote in BC, fetches the PDF, and sends the email automatically.
+     - You do NOT compose the email. The tool handles all email content.
+
+  PARAMETERS for shop_create_quote_and_email_em:
+  - status: "order" (normal), "no_items" (all requested items OOS), "unrelated" (not an order)
+  - item_id_1..10 / quantity_1..10: matched product IDs and quantities from shop_get_products_em
+  - out_of_stock_notes: comma-separated names of items the customer wanted but are OOS
+
+  RULES:
+  - ALWAYS call shop_get_products_em first
+  - ALWAYS call shop_create_quote_and_email_em second. Never skip it.
+  - Only use item IDs from shop_get_products_em in_stock list
+  - If ALL requested items are OOS: set status="no_items", pass out_of_stock_notes
+  - If request is not an order: set status="unrelated", no items needed
+  - If request is vague with no specific items: set status="unrelated"
+  - Never compose email text yourself. The tool handles all email formatting.
+  - Your text response after tool calls should be a brief summary like "Quote SQ0105 created and emailed."
+guidelines: []
+collaborators: []
+tools:
+- shop_get_products_em
+- shop_create_quote_and_email_em
+toolkits: []
+plugins:
+  agent_pre_invoke: []
+  agent_post_invoke: []
+knowledge_base: []
+chat_with_docs:
+  enabled: false
+  supports_full_document: true
+  vector_index:
+    chunk_size: 400
+    chunk_overlap: 50
+    limit: 10
+    extraction_strategy: express
+  generation:
+    prompt_instruction: ''
+    max_docs_passed_to_llm: 5
+    generated_response_length: Moderate
+    display_text_no_results_found: I searched my knowledge base, but did not find
+      anything related to your query
+    display_text_connectivity_issue: I might have information related to your query
+      to share, but am unable to connect to my knowledge base at the moment
+    idk_message: I'm afraid I don't understand. Please rephrase your question.
+    enabled: false
+  query_rewrite:
+    enabled: true
+  confidence_thresholds:
+    retrieval_confidence_threshold: Lowest
+    response_confidence_threshold: Lowest
+  hap_filtering:
+    output:
+      enabled: false
+      threshold: 0.5
+  query_source: Agent
+  agent_query_description: The query to search for in the knowledge base
+  citations:
+    citation_title: How do we know?
+    citations_shown: -1
+starter_prompts:
+  is_default_prompts: false
+  prompts: []
+welcome_content:
+  welcome_message: Sales quote processor for the email channel.
+  description: Sales quote processor for the email channel.
+  is_default_message: false
+spec_version: v1
